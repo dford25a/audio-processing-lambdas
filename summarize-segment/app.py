@@ -20,28 +20,25 @@ def lambda_handler(event, context):
         text = f.read()
         
     client = OpenAI(
-        # This is the default and can be omitted
         api_key='REMOVED',
     )
     
     def get_completion(prompt, client, model="gpt-3.5-turbo"):
         messages = [{"role": "user", "content": prompt}]
-        client.chat.completions.create(
+        response = client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=0.1, # this is the degree of randomness of the model's output
         )
-        return response.choices[0].message["content"]
+        return response.choices[0].message.content
     
     summary=''
     prompt =f"""
     Your task is to extract the key details and write a summary of the dungeons and dragons session that the people in the text are playing. Please provide only a 500 word summary of the what has happened in the dungeons and dragons session.
     Text: ```{text}```
     """
-    try:
-        response = get_completion(prompt, client)
-    except:
-        response = get_completion(prompt, client)
+    response = get_completion(prompt, client)
+    
     print(response)
     summary+=response
     
@@ -51,5 +48,5 @@ def lambda_handler(event, context):
 
     return {
         'statusCode': 200,
-        'body': response['choices'][0]['text']
+        'body': response
     }

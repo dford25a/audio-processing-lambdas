@@ -28,8 +28,15 @@ def handler(event, context):
         myaudio = AudioSegment.from_file(audio_file)
         audio_length = len(myaudio)
         print('length of audio: '+str(audio_length))
-        segment_length = 1500000 # 25 min
+        segment_length = 720000 # 15 min
         num_segments = math.ceil(audio_length/segment_length)
+        
+        def format_number(number):
+            formatted_number = str(number)
+            if number < 10:
+                formatted_number = '0'+str(number)
+            return formatted_number
+        
         if num_segments == 1:
             out_fn = audio_file[:-4]+'.m4a'
             myaudio.export(out_fn, format="ipod")
@@ -45,11 +52,11 @@ def handler(event, context):
                 if stop_idx > audio_length:
                     stop_idx = audio_length
                 chunk_data = myaudio[start_idx:stop_idx]
-                out_fn = audio_file[:-4]+'_'+str(i+1)+'_of_'+str(num_segments-1)+'.m4a'
+                out_fn = audio_file[:-4]+'_'+format_number(i+1)+'_of_'+format_number(num_segments-1)+'.m4a'
                 print('exporting:' +out_fn)
                 chunk_data.export(out_fn, format="ipod")
             
-                out_key = out_subdir+fn[:-4]+'_'+str(i+1)+'_of_'+str(num_segments-1)+'.m4a'
+                out_key = out_subdir+fn[:-4]+'_'+format_number(i+1)+'_of_'+format_number(num_segments-1)+'.m4a'
                 #s3.put_object(Bucket=bucket, Key=out_key, Body=text)
                 print('uploading: '+out_fn+' to bucket: '+bucket+' and key: '+out_key)
                 s3.upload_file(Filename=out_fn, Bucket=bucket, Key=out_key)
