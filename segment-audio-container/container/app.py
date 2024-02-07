@@ -28,7 +28,7 @@ def handler(event, context):
         myaudio = AudioSegment.from_file(audio_file)
         audio_length = len(myaudio)
         print('length of audio: '+str(audio_length))
-        segment_length = 720000 # 15 min
+        segment_length = 1200000 # 20 min
         num_segments = math.ceil(audio_length/segment_length)
         
         def format_number(number):

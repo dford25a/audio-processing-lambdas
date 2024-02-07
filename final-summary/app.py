@@ -31,15 +31,17 @@ def lambda_handler(event, context):
             print('All segments present!')
             for obj in uploaded_objs['Contents']:
                 data = s3.get_object(Bucket=bucket, Key=obj['Key'])
-                contents = data['Body'].read()
+                contents = data['Body'].read().decode('utf8')
                 text = text + contents
-    for obj in uploaded_objs['Contents']:
-        data = s3.get_object(Bucket=bucket, Key=obj['Key'])
-        contents = data['Body'].read().decode('utf8')
-        text = text + contents
+    else:
+        for obj in uploaded_objs['Contents']:
+            data = s3.get_object(Bucket=bucket, Key=obj['Key'])
+            contents = data['Body'].read().decode('utf8')
+            text = text + contents
         
     client = OpenAI(
         # This is the default and can be omitted
+        #ryans key 'REMOVED'
         api_key='REMOVED',
     )
     
@@ -53,8 +55,7 @@ def lambda_handler(event, context):
         )
         return response.choices[0].message.content
     
-    summary=''
-    prompt =f"""You are Scribe, an AI-powered assistant that summarizes DnD sessions to compile a knowledge base of information for the dungeon master and players to reference throughout the campaign.
+    prompt = f"""You are Scribe, an AI-powered assistant that summarizes DnD sessions to compile a knowledge base of information for the dungeon master and players to reference throughout the campaign.
 
 You will be provided with a list of correct player character names. You should match and replace the names generated in overview with these correct names because the overview may not have generated them accurately. 
 
@@ -69,13 +70,14 @@ Locations - 3-5 main settings of the session. Each location should have a name o
 Scenes - 3-5 key scenes from the session that would make for good paintings. These should be written in the format of Dall-e prompts with a consistent fantasy-themed aesthetic. 
 Quests - A bulleted list of 1-3 quests that the party is working toward within the session and beyond. Each quest should be limited to 5-20 words. 
 Player Character summaries - A bullet list of 2-3 key contributions that each player character made to the session.
+
 ```{text}```
 """
     response = get_completion(prompt, client)
     #print(response)
     
     fn = os.path.split(key)[1] #name of just file itself
-    if key[-9:-5] == '_of_':
+    if key[-10:-6] == '_of_':
         out_key = out_subdir+fn[:-11]+'.json'
     else:
         out_key = out_subdir+fn[:-4]+'.json'
@@ -83,5 +85,5 @@ Player Character summaries - A bullet list of 2-3 key contributions that each pl
 
     return {
         'statusCode': 200,
-        'body': response['choices'][0]['text']
+        'body': response.choices[0].message.content
     }

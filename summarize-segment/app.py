@@ -34,10 +34,13 @@ def lambda_handler(event, context):
     
     summary=''
     prompt =f"""
-    Your task is to extract the key details and write a summary of the dungeons and dragons session that the people in the text are playing. Please provide only a 500 word summary of the what has happened in the dungeons and dragons session.
+    Your task is to extract the key details and write a summary of a segment of a dungeons and dragons session that the people in the text are playing. Please provide a 1000 word summary of the what has happened in this segment of the session, including characters involved, NPCS, key scenes, and key moments.
     Text: ```{text}```
     """
-    response = get_completion(prompt, client)
+    try:
+        response = get_completion(prompt, client)
+    except:
+        response = ''
     
     print(response)
     summary+=response
