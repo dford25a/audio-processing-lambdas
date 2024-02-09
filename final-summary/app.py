@@ -78,7 +78,7 @@ Player Character summaries - A bullet list of 2-3 key contributions that each pl
     
     fn = os.path.split(key)[1] #name of just file itself
     if key[-10:-6] == '_of_':
-        out_key = out_subdir+fn[:-11]+'.json'
+        out_key = out_subdir+fn[:-15]+'.json'
     else:
         out_key = out_subdir+fn[:-4]+'.json'
     object = s3.put_object(Bucket=bucket, Key=out_key, Body=response)
