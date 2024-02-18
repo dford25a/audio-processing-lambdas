@@ -28,7 +28,7 @@ def handler(event, context):
         myaudio = AudioSegment.from_file(audio_file)
         audio_length = len(myaudio)
         print('length of audio: '+str(audio_length))
-        segment_length = 1200000 # 20 min
+        segment_length = 1800000 #30 min
         num_segments = math.ceil(audio_length/segment_length)
         
         def format_number(number):
@@ -44,6 +44,8 @@ def handler(event, context):
             #s3.put_object(Bucket=bucket, Key=out_key, Body=text)
             print('uploading: '+out_fn+' to bucket: '+bucket+' and key: '+out_key)
             s3.upload_file(Filename=out_fn, Bucket=bucket, Key=out_key)
+            #cleanup
+            os.remove(out_fn)
         else:
             for i in range(num_segments-1):
                 start_idx = (i)*segment_length
@@ -60,8 +62,10 @@ def handler(event, context):
                 #s3.put_object(Bucket=bucket, Key=out_key, Body=text)
                 print('uploading: '+out_fn+' to bucket: '+bucket+' and key: '+out_key)
                 s3.upload_file(Filename=out_fn, Bucket=bucket, Key=out_key)
-            
-
+                #cleanup tmp to avoid running out of space w/ big files
+                os.remove(out_fn)
+        #cleanup input audio
+        os.remove(audio_file)
         return {
             "statusCode": 200,
             "body": json.dumps(num_segments)

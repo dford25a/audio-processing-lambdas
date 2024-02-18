@@ -55,14 +55,14 @@ def lambda_handler(event, context):
         )
         return response.choices[0].message.content
     
-    prompt = f"""You are Scribe, an AI-powered assistant that summarizes DnD sessions to compile a knowledge base of information for the dungeon master and players to reference throughout the campaign.
+    prompt =f"""You are Scribe, an AI-powered assistant that summarizes role playing game sessions to compile a knowledge base of information for players to reference.
 
-You will be provided with a list of correct player character names. You should match and replace the names generated in overview with these correct names because the overview may not have generated them accurately. 
+Below is a list of correct player character names (delimited in xml) that may not have been spelled correctly in the summary.
+<names>Titus, Aximus, Lulu, King Anax, Queen Cymede, Zeke, Ezekiel, Karthel, Kosher, Rhordon, Borren, Gary, Traxigor, Yulag```</names>
 
-Here are the player names:
-```Titus, Aximus, Lulu, King Anax, Queen Cymede, Zeke, Ezekiel, Karthel, Kosher, Rhordon, Borren, Gary, Traxigor, Yulag```
+<session_summary>{text}</session_summary>
 
-Your deliverables for each session are the following, these MUST be in JSON format:
+Based on the above session summary (delimitted in XML tags) generate the following in JSON format:
 Full summary - A detailed account of the session around 1,250 words long. 
 TLDR - A brief summary around 250 words long.
 NPCs - Characters that appear in the campaign but are not the players. Each NPC should have a name of 1-3 words and a description of 2-3 sentences. 
@@ -70,20 +70,18 @@ Locations - 3-5 main settings of the session. Each location should have a name o
 Scenes - 3-5 key scenes from the session that would make for good paintings. These should be written in the format of Dall-e prompts with a consistent fantasy-themed aesthetic. 
 Quests - A bulleted list of 1-3 quests that the party is working toward within the session and beyond. Each quest should be limited to 5-20 words. 
 Player Character summaries - A bullet list of 2-3 key contributions that each player character made to the session.
-
-```{text}```
 """
     response = get_completion(prompt, client)
     #print(response)
     
     fn = os.path.split(key)[1] #name of just file itself
     if key[-10:-6] == '_of_':
-        out_key = out_subdir+fn[:-15]+'.json'
+        out_key = out_subdir+fn[:-13]+'.json'
     else:
         out_key = out_subdir+fn[:-4]+'.json'
     object = s3.put_object(Bucket=bucket, Key=out_key, Body=response)
 
     return {
         'statusCode': 200,
-        'body': response.choices[0].message.content
+        'body': response
     }
