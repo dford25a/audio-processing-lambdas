@@ -4,6 +4,7 @@ import json
 import urllib3
 import urllib.parse
 import boto3
+from boto3.dynamodb.conditions import Key, Attr
 import math
 from pydub import AudioSegment
 
@@ -21,6 +22,21 @@ def handler(event, context):
         
         audio_file=f"/tmp/{key}"
         fn = os.path.split(key)[1] #name of just file itself
+        
+        # update session to PROCESSING
+        table = boto3.resource('dynamodb').Table('Session-ejphalvgizhdjbbzuj2vahx7ii-dev')
+        response = table.scan(
+            FilterExpression=Attr('audioFile').eq(fn)
+        )
+        items = response['Items']
+        item = items[0]
+        item['transcriptionStatus'] = 'PROCESSING'
+        # put (idempotent)
+        table.put_item(Item=item)
+        # response = table.get_item(Key={'id': ???})
+        # item = response['Item']
+        # update
+
         
         # Downloading file to split
         s3.download_file(bucket, key, audio_file)
@@ -66,12 +82,17 @@ def handler(event, context):
                 os.remove(out_fn)
         #cleanup input audio
         os.remove(audio_file)
+        
+
+        
         return {
             "statusCode": 200,
             "body": json.dumps(num_segments)
         }
     except Exception as e:
         print(e)
+        item['transcriptionStatus'] = 'ERROR'
+        table.put_item(Item=item)
         return {
             "statusCode": 500,
             "body": json.dumps("Error processing the file")
