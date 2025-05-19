@@ -1,6 +1,11 @@
 provider "aws" {
-  region = "us-east-2"
+  region = "us-east-2" # As per your dev.tfvars and api_gateway.tf
 }
+
+# Data sources to get current AWS region and account ID
+# (These might also be in your api_gateway.tf, ensure they are accessible or define them here)
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
 
 # Reference the current bucket based on environment
 data "aws_s3_bucket" "current_bucket" {
@@ -12,9 +17,9 @@ data "aws_dynamodb_table" "current_table" {
   name = local.config.dynamodb_table
 }
 
-# IAM Role for Lambda functions
+# IAM Role for Lambda functions (shared role)
 resource "aws_iam_role" "lambda_exec_role" {
-  name = "lambda_s3_dynamodb_role_${var.environment}"
+  name = "lambda_s3_dynamodb_appsync_role_${var.environment}" # Updated name to reflect AppSync
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -49,7 +54,10 @@ resource "aws_iam_policy" "lambda_logging" {
           "logs:PutLogEvents"
         ]
         Effect   = "Allow"
-        Resource = "arn:aws:logs:*:*:*"
+        # It's good practice to scope this more tightly if possible, 
+        # but "*" is common for general logging.
+        # For tighter scope: "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/*${local.config.function_suffix}:*"
+        Resource = "arn:aws:logs:*:*:*" 
       }
     ]
   })
@@ -73,8 +81,8 @@ resource "aws_iam_policy" "lambda_s3" {
         ]
         Effect   = "Allow"
         Resource = [
-          "${data.aws_s3_bucket.current_bucket.arn}",
-          "${data.aws_s3_bucket.current_bucket.arn}/*"
+          data.aws_s3_bucket.current_bucket.arn, # Bucket level permissions (e.g., for ListBucket)
+          "${data.aws_s3_bucket.current_bucket.arn}/*" # Object level permissions
         ]
       }
     ]
@@ -100,7 +108,45 @@ resource "aws_iam_policy" "lambda_dynamodb" {
         ]
         Effect   = "Allow"
         Resource = [
-          "${data.aws_dynamodb_table.current_table.arn}"
+          data.aws_dynamodb_table.current_table.arn,
+          "${data.aws_dynamodb_table.current_table.arn}/index/*" # If you have GSIs
+        ]
+      }
+    ]
+  })
+}
+
+# IAM Policy for Lambda to invoke other Lambda functions
+resource "aws_iam_policy" "lambda_invoke" {
+  name        = "lambda_invoke_${var.environment}"
+  description = "IAM policy for Lambda to invoke other Lambdas"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = ["lambda:InvokeFunction"]
+        Effect   = "Allow"
+        Resource = "*" # Consider scoping this down if possible to specific Lambda ARNs
+      }
+    ]
+  })
+}
+
+# --- NEW: IAM Policy for Lambda to access AppSync ---
+resource "aws_iam_policy" "lambda_appsync" {
+  name        = "lambda_appsync_access_${var.environment}"
+  description = "IAM policy for AppSync GraphQL access from Lambda"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "appsync:GraphQL"
+        Effect = "Allow"
+        Resource = [
+          # Specific permissions for the queries/mutations the final_summary Lambda will use
+          "arn:aws:appsync:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:apis/${var.appsync_api_id}/*"
         ]
       }
     ]
@@ -123,26 +169,12 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamodb" {
   policy_arn = aws_iam_policy.lambda_dynamodb.arn
 }
 
-# IAM Policy for Lambda to invoke other Lambda functions
-resource "aws_iam_policy" "lambda_invoke" {
-  name        = "lambda_invoke_${var.environment}"
-  description = "IAM policy for Lambda to invoke other Lambdas"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = [
-          "lambda:InvokeFunction"
-        ]
-        Effect   = "Allow"
-        Resource = "*"
-      }
-    ]
-  })
-}
-
 resource "aws_iam_role_policy_attachment" "lambda_invoke" {
   role       = aws_iam_role.lambda_exec_role.name
   policy_arn = aws_iam_policy.lambda_invoke.arn
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_appsync_attachment" {
+  role       = aws_iam_role.lambda_exec_role.name
+  policy_arn = aws_iam_policy.lambda_appsync.arn
 }

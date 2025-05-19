@@ -95,7 +95,6 @@ def lambda_handler(event, context):
 
             item['description'] = refined_summary_json['refined_summary']
             item['tldr'] = [refined_summary_json['refined_tldr']]
-            item['transcriptionStatus'] = 'READ'
 
             print("Updating item in DynamoDB")
             table.put_item(Item=item)

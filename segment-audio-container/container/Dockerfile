@@ -1,7 +1,7 @@
 FROM public.ecr.aws/lambda/python:3.10
 
 RUN yum -y install git wget tar xz
-RUN wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz && tar xvf ffmpeg-release-amd64-static.tar.xz && mv ffmpeg-6.1-amd64-static/ffmpeg /usr/bin/ffmpeg && mv ffmpeg-6.1-amd64-static/ffprobe /usr/bin/ffprobe && rm -Rf ffmpeg*
+RUN wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz && tar xvf ffmpeg-release-amd64-static.tar.xz && mv ffmpeg-7.0.2-amd64-static/ffmpeg /usr/bin/ffmpeg && mv ffmpeg-7.0.2-amd64-static/ffprobe /usr/bin/ffprobe && rm -Rf ffmpeg*
 RUN pip install pydub
 RUN pip install --no-cache-dir setuptools-rust
 #RUN pip install --no-cache-dir git+https://github.com/openai/whisper.git 

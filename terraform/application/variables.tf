@@ -9,18 +9,36 @@ variable "openai_api_key" {
   sensitive   = true
 }
 
+variable "appsync_api_url" {
+  description = "The GraphQL endpoint URL of your AppSync API."
+  type        = string
+  # This will be populated from your dev.tfvars or prod.tfvars
+}
+
+variable "appsync_api_id" {
+  description = "The ID of your AppSync GraphQL API (e.g., from the AppSync console or CloudFormation output)."
+  type        = string
+  # This needs to be added to your .tfvars files
+}
+
+variable "appsync_api_key" {
+  description = "The API key for the AppSync API."
+  type        = string
+  sensitive   = true # Mark as sensitive to avoid showing in CLI output
+}
+
 locals {
   # Environment-specific configuration
   env_config = {
     prod = {
-      s3_bucket       = "scribe8a8fcf3f6cb14734bce4bd48352f8043195641-dev"
-      dynamodb_table  = "Session-ejphalvgizhdjbbzuj2vahx7ii-dev"
-      function_suffix = "-prod"  # No suffix for prod
+      s3_bucket       = "scribe8a8fcf3f6cb14734bce4bd48352f8043195641-dev" # Note: Your prod S3 bucket seems to have '-dev' in its name
+      dynamodb_table  = "Session-ejphalvgizhdjbbzuj2vahx7ii-dev" # Note: Your prod DynamoDB table seems to have '-dev' in its name
+      function_suffix = "-prod"
     },
     dev = {
       s3_bucket       = "scribe8a8fcf3f6cb14734bce4bd48352f80433dbd8-devsort"  
       dynamodb_table  = "Session-a6imejpsvbd67dd44nsarzri2m-devsort"
-      function_suffix = "-dev"  # Add -dev suffix to function names
+      function_suffix = "-dev"
     }
   }
 
