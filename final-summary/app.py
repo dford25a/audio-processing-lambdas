@@ -14,14 +14,12 @@ from pydantic import BaseModel, Field
 import openai # Added for openai.APIError
 from openai import OpenAI
 
-
 # --- CONFIGURATION ---
 OPENAI_API_KEY_FROM_ENV = os.environ.get('OPENAI_API_KEY')
 APPSYNC_API_URL = os.environ.get('APPSYNC_API_URL') # AppSync GraphQL Endpoint URL
 APPSYNC_API_KEY_FROM_ENV = os.environ.get('APPSYNC_API_KEY')
 AWS_REGION = os.environ.get('AWS_REGION', 'us-east-2') # Default region if not set
-DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE') # DynamoDB table name for Sessions (updated variable name)
-# S3_IMAGE_BUCKET = os.environ.get('S3_IMAGE_BUCKET_NAME') # If images go to a different bucket
+DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE') # DynamoDB table name for Sessions
 
 # --- VALIDATE ESSENTIAL CONFIGURATION ---
 if not OPENAI_API_KEY_FROM_ENV:
@@ -30,10 +28,8 @@ if not APPSYNC_API_URL:
     raise ValueError("Environment variable APPSYNC_API_URL not set!")
 if not APPSYNC_API_KEY_FROM_ENV:
     raise ValueError("Environment variable APPSYNC_API_KEY not set!")
-if not DYNAMODB_TABLE_NAME: # Updated validation for the environment variable
+if not DYNAMODB_TABLE_NAME:
     raise ValueError("Environment variable DYNAMODB_TABLE not set!")
-# if not S3_IMAGE_BUCKET:
-#     raise ValueError("Environment variable S3_IMAGE_BUCKET_NAME not set!")
 
 
 # --- AWS & OPENAI CLIENTS ---
@@ -76,21 +72,16 @@ Example:
 }
 """
 
-# --- GraphQL Definitions ---
-# The 'owner' field in the Session table is assumed to already contain the "id::name" formatted string.
-LIST_SESSIONS_QUERY = """
-query ListSessions($filter: ModelSessionFilterInput, $limit: Int, $nextToken: String) {
-  listSessions(filter: $filter, limit: $limit, nextToken: $nextToken) {
-    items {
+GET_SESSION_QUERY = """
+query GetSession($id: ID!) {
+  getSession(id: $id) {
+    id
+    _version
+    audioFile
+    owner
+    campaign {
       id
-      _version
-      audioFile
-      owner # This field might not return the full cognitoId::username as per user's observation
-      campaign {
-        id
-      }
     }
-    nextToken
   }
 }
 """
@@ -131,7 +122,7 @@ mutation CreateSegment($input: CreateSegmentInput!) {
     description
     image
     sessionSegmentsId
-    owner # This field will receive the "id::name" formatted string directly from the Session's owner field
+    owner
     createdAt
     updatedAt
     _version
@@ -199,20 +190,19 @@ def generate_and_upload_image(
         if debug:
             print(f"Generating image ... prompt: '{full_prompt}'")
 
-        # Call to OpenAI API to generate an image - UPDATED PARAMETERS
         response = openai_client.images.generate(
-            model="gpt-image-1", 
+            model="gpt-image-1",
             prompt=full_prompt,
             n=1,
-            size="1536x1024",  
+            size="1536x1024",
             quality="low"
         )
 
         if response.data and response.data[0].b64_json:
             image_data_b64 = response.data[0].b64_json
-            image_bytes = base64.b64decode(image_data_b64) # Decode base64 string to bytes
+            image_bytes = base64.b64decode(image_data_b64) 
 
-            image_filename = f"{session_id}_segment_{segment_index + 1}.png" # Using PNG format
+            image_filename = f"{session_id}_segment_{segment_index + 1}.png" 
             s3_image_key = f"{s3_base_prefix.rstrip('/')}/{image_filename}"
 
             if debug:
@@ -222,31 +212,53 @@ def generate_and_upload_image(
                 Bucket=s3_bucket,
                 Key=s3_image_key,
                 Body=image_bytes,
-                ContentType='image/png' # Set the content type for the S3 object
+                ContentType='image/png' 
             )
 
             if debug:
                 print(f"Image successfully uploaded. S3 Key: {s3_image_key}")
-            return s3_image_key # Return only the S3 key
+            return s3_image_key 
         else:
-            print("Failed to generate image or received no b64_json data from OpenAI.")
+            print("Failed to generate image or received no b64_json data from OpenAI. The API response structure might have changed or an error occurred.")
+            if debug and response:
+                 print(f"OpenAI API Response Data: {response.data}")
             return None
 
-    except openai.APIError as e: # Catch OpenAI specific API errors
+    except openai.APIError as e: 
         print(f"OpenAI API error during image generation: {e}")
         return None
-    except Exception as e: # Catch any other exceptions during the process
-        print(f"An unexpected error occurred during image generation or upload: {e}")
-        traceback.print_exc() # Print full traceback for unexpected errors
+    except AttributeError as e: 
+        print(f"AttributeError during image processing (likely response structure changed or missing b64_json): {e}")
+        if debug and 'response' in locals():
+            print(f"Full OpenAI API Response object: {response}")
+        traceback.print_exc()
         return None
+    except Exception as e: 
+        print(f"An unexpected error occurred during image generation or upload: {e}")
+        traceback.print_exc() 
+        return None
+
+# --- Helper function to parse Session ID from filename stem ---
+def parse_session_id_from_stem(filename_stem: str) -> Optional[str]:
+    """
+    Parses the Session UUID from a filename stem like 'campaign<UUID>Session<SESSION_UUID>'.
+    Example: 'campaign727cc722-1e8a-40b9-bf33-c9a5d982f629Session4ad02dcd-38c1-48b3-a0c2-b04ee9e1efbf'
+    Returns the Session UUID (e.g., '4ad02dcd-38c1-48b3-a0c2-b04ee9e1efbf') or None if not found.
+    """
+    # Regex to find 'Session' followed by a UUID
+    # UUID pattern: 8-4-4-4-12 hexadecimal characters
+    match = re.search(r"Session([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", filename_stem)
+    if match:
+        return match.group(1) # Return the captured UUID part
+    return None
 
 # --- Lambda Handler ---
 def lambda_handler(event, context):
-    session_info = None
-    key = None
-    debug = True # Set to False for production
+    session_info = None # Will store the fetched session data
+    key = None # S3 key for the transcript file
+    debug = True 
     s3_image_upload_bucket = None
-    updated_session_data = None # Initialize to avoid reference before assignment in error block
+    updated_session_data = None # Stores result of UpdateSession mutation
 
     try:
         if debug:
@@ -255,75 +267,117 @@ def lambda_handler(event, context):
             print(f"AWS Region: {AWS_REGION}")
             print(f"DynamoDB Session Table (from DYNAMODB_TABLE env var): {DYNAMODB_TABLE_NAME}")
 
-
         record = event["Records"][0]
-        s3_transcript_bucket = record["s3"]["bucket"]["name"]
-        s3_image_upload_bucket = os.environ.get('S3_IMAGE_BUCKET_NAME', s3_transcript_bucket)
+        s3_transcript_bucket = record["s3"]["bucket"]["name"] 
+        s3_image_upload_bucket = os.environ.get('S3_IMAGE_BUCKET_NAME', s3_transcript_bucket) 
         key = urllib.parse.unquote_plus(record['s3']['object']['key'], encoding='utf-8')
 
-        s3_transcript_output_prefix = 'public/transcriptedSummary/'
-        s3_segment_image_prefix = 'public/segmentImages/'
+        s3_transcript_output_prefix = 'public/transcriptedSummary/' 
+        s3_segment_image_prefix = 'public/segmentImages/' 
+        s3_metadata_prefix = 'public/session_metadata/'
 
-        original_filename_with_ext = os.path.basename(key)
-        filename_stem_for_search = os.path.splitext(original_filename_with_ext)[0]
-
+        original_filename_with_ext = os.path.basename(key) 
+        filename_stem_for_search = os.path.splitext(original_filename_with_ext)[0] 
+                                                                                
         if debug:
             print(f"Processing transcript file: {key} from bucket: {s3_transcript_bucket}")
             print(f"Images will be uploaded to bucket: {s3_image_upload_bucket} under prefix: {s3_segment_image_prefix}")
             print(f"Original S3 filename (from event object key): {original_filename_with_ext}")
-            print(f"Filename stem for AppSync search (derived from S3 key): {filename_stem_for_search}")
+            print(f"Filename stem for AppSync search AND metadata: {filename_stem_for_search}")
 
-        print(f"Searching for Session with audioFile starting with: {filename_stem_for_search}")
-        current_next_token = None
-        found_matching_session = None
-        MAX_PAGES = 25
-        pages_queried = 0
+        # --- Attempt to parse Session ID from filename stem ---
+        parsed_session_id = parse_session_id_from_stem(filename_stem_for_search)
 
-        while pages_queried < MAX_PAGES:
-            pages_queried += 1
-            list_sessions_vars = {
-                "filter": {"audioFile": {"beginsWith": filename_stem_for_search}},
-                "limit": 25,
-                "nextToken": current_next_token
-            }
-            if debug: print(f"Querying AppSync (Page {pages_queried}): Variables: {json.dumps(list_sessions_vars)}")
+        if not parsed_session_id:
+            msg = f"Could not parse Session ID from filename stem: '{filename_stem_for_search}'. Cannot proceed with direct GetSession query."
+            print(msg)
+            raise ValueError(msg)
+        
+        if debug:
+            print(f"Parsed Session ID for direct query: {parsed_session_id}")
 
-            session_response_gql = execute_graphql_request(LIST_SESSIONS_QUERY, list_sessions_vars)
+        # --- Fetch Session directly using GetSession query ---
+        print(f"Attempting to fetch Session directly with ID: {parsed_session_id}")
+        get_session_vars = {"id": parsed_session_id}
+        session_response_gql = execute_graphql_request(GET_SESSION_QUERY, get_session_vars)
 
-            if "errors" in session_response_gql and not session_response_gql.get("data"):
-                raise Exception(f"Critical error fetching session list from AppSync: {session_response_gql['errors']}")
+        if "errors" in session_response_gql and not session_response_gql.get("data"):
+            # This case handles GraphQL errors where no data is returned at all
+            raise Exception(f"Critical error fetching session via GetSession(id: {parsed_session_id}): {session_response_gql['errors']}")
 
-            session_data = session_response_gql.get("data", {}).get("listSessions", {})
-            session_items = session_data.get("items", [])
-
-            if debug: print(f"AppSync Response (Page {pages_queried}): Found {len(session_items)} items.")
-
-            if session_items:
-                found_matching_session = session_items[0] 
-                if debug: print(f"Found potential matching session via ListSessions: {json.dumps(found_matching_session)}")
-                break
-
-            current_next_token = session_data.get("nextToken")
-            if not current_next_token:
-                if debug: print("No nextToken from AppSync, scan complete.")
-                break
+        # Check if the session was actually found
+        # AppSync returns data: { getSession: null } if the item is not found with a valid ID
+        found_matching_session = session_response_gql.get("data", {}).get("getSession")
 
         if not found_matching_session:
-            msg = f"No AppSync Session found via ListSessions for audioFile stem '{filename_stem_for_search}' after {pages_queried} page(s)."
-            print(msg); raise ValueError(msg)
+            msg = f"No AppSync Session found via GetSession for ID '{parsed_session_id}' derived from filename stem '{filename_stem_for_search}'."
+            print(msg)
+            raise ValueError(msg) # Or handle as a non-fatal error if preferred, but per request, no fallback.
+        
+        if debug:
+            print(f"Successfully fetched session via GetSession: {json.dumps(found_matching_session)}")
+        # --- End of direct GetSession logic ---
 
-        session_info = found_matching_session 
+
+        # --- Fetch Session Metadata ---
+        session_metadata_content = {}
+        metadata_instructions_str = "Not provided."
+        metadata_adventurers_str = "Not provided."
+        metadata_locations_str = "Not provided."
+        metadata_npcs_str = "Not provided."
+
+        metadata_filename = f"{filename_stem_for_search}.metadata.json"
+        metadata_s3_key = f"{s3_metadata_prefix.rstrip('/')}/{metadata_filename}"
+
+        if debug:
+            print(f"Attempting to fetch session metadata from: s3://{s3_transcript_bucket}/{metadata_s3_key}")
+
+        try:
+            metadata_obj = s3_client.get_object(Bucket=s3_transcript_bucket, Key=metadata_s3_key)
+            metadata_file_content = metadata_obj['Body'].read().decode('utf-8')
+            session_metadata_content = json.loads(metadata_file_content)
+            if debug:
+                print(f"Successfully fetched and parsed metadata: {json.dumps(session_metadata_content)}")
+
+            metadata_instructions_str = session_metadata_content.get("instructions", "Not provided.")
+            adventurers_list = session_metadata_content.get("adventurers")
+            if adventurers_list and isinstance(adventurers_list, list):
+                metadata_adventurers_str = "\n- " + "\n- ".join(adventurers_list) if adventurers_list else "Not provided."
+            else:
+                 metadata_adventurers_str = "Not provided or invalid format."
+
+            locations_list = session_metadata_content.get("locations")
+            if locations_list and isinstance(locations_list, list):
+                metadata_locations_str = "\n- " + "\n- ".join(locations_list) if locations_list else "Not provided."
+            else:
+                metadata_locations_str = "Not provided or invalid format."
+
+            npcs_list = session_metadata_content.get("npcs")
+            if npcs_list and isinstance(npcs_list, list):
+                metadata_npcs_str = "\n- " + "\n- ".join(npcs_list) if npcs_list else "Not provided."
+            else:
+                metadata_npcs_str = "Not provided or invalid format."
+
+        except s3_client.exceptions.NoSuchKey:
+            if debug:
+                print(f"Metadata file not found at {metadata_s3_key}. Proceeding without it.")
+        except json.JSONDecodeError as e:
+            print(f"Error decoding metadata JSON from {metadata_s3_key}: {e}. Proceeding without it.")
+        except Exception as e:
+            print(f"An unexpected error occurred while fetching or parsing metadata from {metadata_s3_key}: {e}. Proceeding without it.")
+            traceback.print_exc()
+        # --- End of Fetch Session Metadata ---
+
+        session_info = found_matching_session # Assign the directly fetched session
         session_id = session_info["id"]
         session_version = session_info["_version"]
 
-        # --- MODIFIED OWNER HANDLING: Fetch owner directly from DynamoDB ---
         segment_owner_value_for_appsync = None
-        # Use DYNAMODB_TABLE_NAME which gets its value from the DYNAMODB_TABLE environment variable
-        session_table = dynamodb_resource.Table(DYNAMODB_TABLE_NAME) 
+        session_table = dynamodb_resource.Table(DYNAMODB_TABLE_NAME)
 
         try:
-            if debug: print(f"Fetching session item directly from DynamoDB table '{DYNAMODB_TABLE_NAME}' using ID: {session_id}")
-            response_ddb = session_table.get_item(Key={'id': session_id})
+            if debug: print(f"Fetching session item directly from DynamoDB table '{DYNAMODB_TABLE_NAME}' using ID: {session_id} (for owner field)")
+            response_ddb = session_table.get_item(Key={'id': session_id}) # session_id here is already the parsed_session_id
 
             if 'Item' in response_ddb:
                 dynamodb_session_item = response_ddb['Item']
@@ -332,43 +386,44 @@ def lambda_handler(event, context):
 
                 if not segment_owner_value_for_appsync:
                     print(f"Warning: 'owner' field is missing or empty in DynamoDB item for Session {session_id}.")
-                elif "::" not in segment_owner_value_for_appsync: 
+                elif "::" not in segment_owner_value_for_appsync:
                     print(f"Warning: Session {session_id} owner field ('{segment_owner_value_for_appsync}') from DynamoDB " +
                           "does not contain '::'. It might not be in the expected 'cognitoId::username' format.")
             else:
-                print(f"Critical Warning: Session item with ID '{session_id}' was found by ListSessions but NOT found directly in DynamoDB table '{DYNAMODB_TABLE_NAME}'. " +
-                      "This indicates a potential data consistency issue or incorrect table name. Proceeding without owner for segments.")
+                # This case should ideally not happen if GetSession was successful, but good to log.
+                print(f"Warning: Session item with ID '{session_id}' was found by GetSession but NOT found directly in DynamoDB table '{DYNAMODB_TABLE_NAME}' for owner lookup. " +
+                      "This might indicate a slight delay or consistency issue if GetSession reads from a replica. Proceeding without owner for segments if not found.")
         except Exception as ddb_e:
             print(f"Error fetching session owner directly from DynamoDB table '{DYNAMODB_TABLE_NAME}': {str(ddb_e)}. " +
                   "Segments may be created without an owner or with a null owner.")
             traceback.print_exc()
-        # --- END OF MODIFIED OWNER HANDLING ---
 
         if not segment_owner_value_for_appsync:
             print(f"Warning: Session {session_id} will have segments created with a null or empty owner due to issues fetching/finding it from DynamoDB. " +
                   "Please check DynamoDB table and previous logs.")
 
         if debug:
-            print(f"Found Session ID: {session_id} (v: {session_version}), " +
+            print(f"Using Session ID: {session_id} (v: {session_version}), " +
                   f"Effective Segment Owner for AppSync (from DDB direct read): {segment_owner_value_for_appsync}")
 
         campaign_id = session_info.get("campaign", {}).get("id")
         if not campaign_id: print(f"Warning: Session {session_id} lacks campaign ID. NPC context will be limited.")
-        if debug: print(f"Associated audioFile from ListSessions AppSync: {session_info.get('audioFile')}")
+        if debug: print(f"Associated audioFile from GetSession AppSync: {session_info.get('audioFile')}")
 
 
-        npc_context_string = "No specific NPC context available."
+        npc_context_string_campaign = "No specific NPC context available from campaign."
         if campaign_id:
             print(f"Fetching NPCs for Campaign ID: {campaign_id}")
             all_npc_items = []
             npc_current_next_token = None
-            npc_pages_queried = 0
-            while npc_pages_queried < MAX_PAGES:
+            npc_pages_queried = 0 # MAX_PAGES still used here for NPC pagination
+            MAX_PAGES_NPC = 25 # Can be a different constant if needed for NPCs
+            while npc_pages_queried < MAX_PAGES_NPC: 
                 npc_pages_queried +=1
                 npc_query_vars = {"campaignId": campaign_id, "limit": 50, "nextToken": npc_current_next_token}
                 npc_response_gql = execute_graphql_request(GET_NPCS_BY_CAMPAIGN_QUERY, npc_query_vars)
                 if "errors" in npc_response_gql and not npc_response_gql.get("data"):
-                    print(f"Warning: GraphQL error during GetNpcs: {npc_response_gql['errors']}. Proceeding without full NPC context.")
+                    print(f"Warning: GraphQL error during GetNpcs: {npc_response_gql['errors']}. Proceeding without full NPC context from campaign.")
                     break
                 npc_data = npc_response_gql.get("data", {}).get("campaignNpcsByCampaignId", {})
                 npc_items_on_page = npc_data.get("items", [])
@@ -381,10 +436,10 @@ def lambda_handler(event, context):
                 for item in all_npc_items if item.get("nPC")
             ]
             if npc_details:
-                npc_context_string = "Relevant NPCs in this campaign:\n" + "\n".join(npc_details)
+                npc_context_string_campaign = "Relevant NPCs in this campaign:\n" + "\n".join(npc_details)
             else:
-                npc_context_string = "No NPCs found or retrieved for this campaign."
-            if debug: print(f"NPC Context String:\n{npc_context_string}")
+                npc_context_string_campaign = "No NPCs found or retrieved for this campaign."
+            if debug: print(f"NPC Context String (Campaign):\n{npc_context_string_campaign}")
         else:
             if debug: print("Skipping NPC fetch as Campaign ID is missing.")
 
@@ -399,7 +454,7 @@ Your task is to process a TTRPG session transcript and generate:
 2. Session Segments: A list of chronological segments. Each segment must have:
    a. 'title': A clear title for the segment.
    b. 'description': A detailed narrative of events, actions, character interactions, plot twists, and key moments in that segment.
-   c. 'image_prompt': A concise, visually descriptive prompt (max 2-3 sentences) suitable for generating an image for this segment using DALL-E. This prompt should capture the visual essence of the segment (key characters, setting, action, mood). DO NOT include the prefix 'fantasy-style painting in the dungeons and dragons DND theme... ' in this 'image_prompt' field; the system will add it automatically.
+   c. 'image_prompt': A concise, visually descriptive prompt (max 2-3 sentences) suitable for generating an image for this segment using a model like DALL-E. This prompt should capture the visual essence of the segment (key characters, setting, action, mood). DO NOT include the prefix 'fantasy-style painting in the dungeons and dragons DND theme... ' in this 'image_prompt' field; the system will add it automatically.
 
 The output must be a JSON object matching the Pydantic model `SummaryElements` which includes `tldr` (a string) and `sessionSegments` (a list of objects, where each object has `title` (string), `description` (string), and `image_prompt` (string)).
 
@@ -408,10 +463,30 @@ Session Transcript:
 {text_to_summarize}
 </session_text>
 
-NPC Context (use for names and roles, if available):
-<npc_context>
-{npc_context_string}
-</npc_context>
+User-Provided Instructions (if any from metadata):
+<user_instructions>
+{metadata_instructions_str}
+</user_instructions>
+
+Key Adventurers from Metadata (if any):
+<adventurers_metadata>
+{metadata_adventurers_str}
+</adventurers_metadata>
+
+Key Locations from Metadata (if any):
+<locations_metadata>
+{metadata_locations_str}
+</locations_metadata>
+
+Key NPCs from Metadata (if any):
+<npcs_metadata>
+{metadata_npcs_str}
+</npcs_metadata>
+
+NPC Context from Campaign (use for names and roles, if available):
+<npc_context_campaign>
+{npc_context_string_campaign}
+</npc_context_campaign>
 
 Example Output Structure (follow this JSON format precisely):
 <example_summary>
@@ -423,10 +498,13 @@ Guidelines for Segments:
 - Divide the session into 2-5 meaningful segments.
 - Distinct parts of the session (e.g., exploration, social interaction, combat, major plot points).
 - Detailed, narrative descriptions.
-- Use character/NPC names as mentioned in the transcript or NPC context.
+- Use character/NPC names as mentioned in the transcript or any provided context (metadata, campaign).
 - Mention important locations, items, or loot if applicable.
 - The 'image_prompt' field from the LLM should be just the specific details for that segment, not the DND theme prefix.
 """
+        if debug:
+            print(f"Full prompt for OpenAI:\n{prompt[:1000]}...\n...\n...{prompt[-500:]}") 
+
         def get_openai_summary_segments_with_image_prompts(prompt_text: str, model: str = "gpt-4o-mini") -> Optional[SummaryElements]:
             messages = [{"role": "user", "content": prompt_text}]
             try:
@@ -469,7 +547,7 @@ Guidelines for Segments:
         print(f"Updating Session {session_id} with TLDR and status via AppSync...")
         update_input = {
             "id": session_id,
-            "_version": session_version, 
+            "_version": session_version,
             "transcriptionStatus": "READ",
             "tldr": [summary_elements_response.tldr] if summary_elements_response.tldr else [],
             "errorMessage": None
@@ -484,7 +562,7 @@ Guidelines for Segments:
         if not updated_session_data or "_version" not in updated_session_data:
             raise Exception("AppSync Session update mutation returned no data, unexpected structure, or missing _version.")
 
-        session_version = updated_session_data["_version"] 
+        session_version = updated_session_data["_version"]
         print(f"Successfully updated Session {session_id}. New version: {session_version}")
 
         print(f"Processing {len(summary_elements_response.sessionSegments)} segments for image generation and AppSync creation...")
@@ -492,12 +570,12 @@ Guidelines for Segments:
         segment_processing_errors = []
 
         for idx, segment in enumerate(summary_elements_response.sessionSegments):
-            segment_image_key_or_none = None # Changed variable name for clarity
+            segment_image_key_or_none = None
             try:
                 print(f"Processing segment {idx + 1}/{len(summary_elements_response.sessionSegments)}: '{segment.title}'")
 
                 if segment.image_prompt:
-                    segment_image_key_or_none = generate_and_upload_image( # Returns S3 key or None
+                    segment_image_key_or_none = generate_and_upload_image(
                         prompt_suffix=segment.image_prompt,
                         s3_bucket=s3_image_upload_bucket,
                         s3_base_prefix=s3_segment_image_prefix,
@@ -512,8 +590,8 @@ Guidelines for Segments:
                     "sessionSegmentsId": session_id,
                     "title": segment.title,
                     "description": [segment.description] if segment.description else [],
-                    "image": segment_image_key_or_none, # Use the S3 key (or None)
-                    "owner": segment_owner_value_for_appsync 
+                    "image": segment_image_key_or_none,
+                    "owner": segment_owner_value_for_appsync
                 }
                 
                 if segment_owner_value_for_appsync is None:
@@ -530,7 +608,6 @@ Guidelines for Segments:
 
                 if created_segment_data and created_segment_data.get("id"):
                     created_segment_details.append(created_segment_data)
-                    # Log the image key as it's stored in AppSync
                     print(f"Successfully created segment ID: {created_segment_data['id']} - '{segment.title}' (Image Key: {created_segment_data.get('image', 'N/A')}, Owner: {created_segment_data.get('owner')})")
                 else:
                     appsync_errors = segment_response.get('errors') if isinstance(segment_response, dict) else 'execute_graphql_request returned non-dict or None for segment creation'
@@ -570,8 +647,10 @@ Guidelines for Segments:
         print(f"FATAL Error processing file {key if key else 'unknown'}: {error_message}")
         traceback.print_exc()
 
+        # Attempt to update session to ERROR state only if session_info was populated (meaning GetSession was successful at least once)
         if session_info and 'id' in session_info and '_version' in session_info:
             session_id_for_error = session_info['id']
+            # Use the version from updated_session_data if available (after TLDR update), else from initial session_info
             session_version_for_error = updated_session_data["_version"] if updated_session_data and "_version" in updated_session_data else session_info['_version']
             
             print(f"Attempting to update Session {session_id_for_error} to ERROR state (v: {session_version_for_error})...")
@@ -592,11 +671,9 @@ Guidelines for Segments:
             except Exception as update_err:
                 print(f"Could not update session to ERROR state during exception handling: {str(update_err)}")
         else:
-            print("Cannot update session to ERROR state: session_info not available or error occurred before session fetch.")
+            print("Cannot update session to ERROR state: session_info not available (e.g., GetSession failed or ID parsing error).")
 
         return {
             "statusCode": 500,
             "body": json.dumps(f"Error processing file: {error_message}")
         }
-
-
