@@ -26,7 +26,7 @@ resource "aws_lambda_function" "start_summary_chain" {
   function_name = "start-summary-chain${local.config.function_suffix}"
   handler       = "app.lambda_handler"
   role          = aws_iam_role.lambda_exec_role.arn
-  runtime       = "python3.10"
+  runtime       = "python3.11"
   timeout       = 30
   memory_size   = 128
 
@@ -125,7 +125,7 @@ resource "aws_lambda_function" "combine_text_segments" {
   function_name = "combine-text-segments${local.config.function_suffix}"
   handler       = "app.lambda_handler"
   role          = aws_iam_role.lambda_exec_role.arn
-  runtime       = "python3.10"
+  runtime       = "python3.11"
   timeout       = 60
   memory_size   = 128
   
@@ -197,7 +197,7 @@ resource "aws_lambda_function" "revise_summary" {
   function_name = "revise-summary${local.config.function_suffix}"
   handler       = "app.lambda_handler"
   role          = aws_iam_role.lambda_exec_role.arn
-  runtime       = "python3.10"
+  runtime       = "python3.11"
   timeout       = 60
   memory_size   = 128
 
@@ -214,17 +214,16 @@ resource "aws_lambda_function" "revise_summary" {
       ENVIRONMENT    = var.environment
       DYNAMODB_TABLE = local.config.dynamodb_table
       OPENAI_API_KEY = var.openai_api_key
-      # If this Lambda also needs AppSync:
-      # APPSYNC_API_URL = var.appsync_api_url
-      # AWS_REGION      = data.aws_region.current.name
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
     }
   }
 
   depends_on = [
     aws_iam_role_policy_attachment.lambda_logs,
     aws_iam_role_policy_attachment.lambda_s3,
-    aws_iam_role_policy_attachment.lambda_dynamodb
-    # Add aws_iam_role_policy_attachment.lambda_appsync_attachment if this lambda also needs AppSync
+    aws_iam_role_policy_attachment.lambda_dynamodb,
+    aws_iam_role_policy_attachment.lambda_appsync_attachment
   ]
 
   tags = {
@@ -237,7 +236,7 @@ resource "aws_lambda_function" "session_chat" {
   function_name = "session-chat${local.config.function_suffix}"
   handler       = "app.lambda_handler"
   role          = aws_iam_role.lambda_exec_role.arn
-  runtime       = "python3.10"
+  runtime       = "python3.11"
   timeout       = 60 
   memory_size   = 128
 
@@ -254,17 +253,16 @@ resource "aws_lambda_function" "session_chat" {
       ENVIRONMENT    = var.environment
       DYNAMODB_TABLE = local.config.dynamodb_table
       OPENAI_API_KEY = var.openai_api_key
-      # If this Lambda also needs AppSync:
-      # APPSYNC_API_URL = var.appsync_api_url
-      # AWS_REGION      = data.aws_region.current.name
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
     }
   }
 
   depends_on = [
     aws_iam_role_policy_attachment.lambda_logs,
     aws_iam_role_policy_attachment.lambda_s3,
-    aws_iam_role_policy_attachment.lambda_dynamodb
-    # Add aws_iam_role_policy_attachment.lambda_appsync_attachment if this lambda also needs AppSync
+    aws_iam_role_policy_attachment.lambda_dynamodb,
+    aws_iam_role_policy_attachment.lambda_appsync_attachment
   ]
 
   tags = {
