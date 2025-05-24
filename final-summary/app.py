@@ -40,12 +40,12 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY_FROM_ENV)
 # --- Pydantic Data Models ---
 class SegmentElement(BaseModel):
     title: str = Field(description="The title of this specific segment of the session.")
-    description: str = Field(description="A detailed textual description of what happened in this segment.")
+    description: str = Field(description="A detailed textual description of what happened in this segment. (5-8 sentences)")
     image_prompt: str = Field(description="A concise, visually descriptive prompt suitable for generating an image for this segment using DALL-E. This prompt should capture the essence of the segment visually.")
 
 class SummaryElements(BaseModel):
     tldr: str = Field(description="A concise 'too long; didn't read' summary of the entire session.")
-    sessionSegments: List[SegmentElement] = Field(description="A list of chronological segments detailing the session's events, each with a title, description, and an image prompt.")
+    sessionSegments: List[SegmentElement] = Field(description="A list of chronological segments detailing the session's events, each with a title, description (5-8 sentence segment summary), and an image prompt.")
 
 # --- EXAMPLE SUMMARY (Updated for Segments with Image Prompts) ---
 example_summary_for_segments_with_images = """
@@ -55,18 +55,20 @@ Example:
   "sessionSegments": [
     {
       "title": "Descent into the Sunken City",
-      "description": "The party, guided by an ancient map, found the hidden entrance to the Sunken City of Eldoria. Elara, the rogue, disarmed several water-themed traps, while Grom, the paladin, used his divine sense to detect lingering magical auras. Lyra, the wizard, cast water breathing on everyone. They encountered mutated merfolk, which they managed to bypass through a combination of stealth and diplomacy, learning about the 'Kraken's Voice' who ruled the city.",
-      "image_prompt": "A fantasy adventuring party (rogue, paladin, wizard) cautiously entering a dark, vine-covered stone archway leading into a mysterious underwater city. Eerie blue light emanates from within. Ancient, crumbling architecture visible in the background, submerged in murky water. Digital art, detailed, atmospheric."
+      "description": "The adventurers—Bron, Donnie, Joe Bangles, and Shifty—carefully explored a mysterious underground tomb marked by a large arched crystal window and a steep drop-off guarded by roped fences. On their way to a side door, they discovered a deep chasm with descending stairs leading to lower platforms, adding complexity to their path. They noted six desiccated corpses wearing black paper mache and feather masks seated on thrones, flanked by two imposing bear statues gripping a bronze disc embossed with a dozen glaring eyes. The group speculated on the significance of the masks and the ominous inscription urging to "don the mask or be seen." ",
+      "image_prompt": "A fantasy adventuring party (rogue, paladin, wizard) cautiously entering a dark, vine-covered stone archway leading into a mysterious underwater city. Eerie blue light emanates from within. Ancient, crumbling architecture visible in the background, submerged in murky water."
     },
     {
       "title": "The Cultist's Sanctum",
-      "description": "Deeper in, they reached a grand, partially submerged temple. Inside, the Kraken's Voice, a powerful sorcerer named Vorlag, was performing a ritual to awaken a dormant leviathan. Combat ensued. Grom engaged Vorlag directly, while Elara picked off cultist acolytes from the shadows. Lyra's counterspells were crucial in disrupting Vorlag's potent magic. Key Moment: Lyra successfully dispelled a tidal wave spell that would have crushed the party.",
-      "image_prompt": "Epic battle scene inside a grand, dimly lit, partially submerged temple. A paladin clashes with a dark sorcerer wielding crackling energy. A rogue attacks from the shadows. A wizard casts a powerful counterspell, deflecting a massive magical wave. Tentacle motifs adorn the temple walls. Dynamic action, fantasy art."
+      "description": "Initially, Bron attempted to smash the crystal window to gain entry but failed to break through. The party persuaded him to stop and instead investigate a side door they discovered nearby. Approaching cautiously through this alternate entrance, they avoided alerting the tomb’s guardians prematurely.
+
+Once inside, Bron swiftly grabbed one of the masks from a corpse just as the undead began to animate, triggering a fierce combat encounter. The party quickly rolled initiative, with Bron raging and attempting to rip the mask off one of the undead, succeeding with a powerful strength check. Shifty conjured a spectral pack of wolves using his fifth-level spell, which inflicted damage and hindered enemy movement. The undead retaliated with life drain attacks, forcing the party to make multiple constitution saving throws to maintain concentration on spells and resist debilitating effects.",
+      "image_prompt": "Epic battle scene inside a grand, dimly lit, partially submerged temple. A paladin clashes with a dark sorcerer wielding crackling energy. A rogue attacks from the shadows. A wizard casts a powerful counterspell, deflecting a massive magical wave. Tentacle motifs adorn the temple walls."
     },
     {
       "title": "The Tidejewel and Narrow Escape",
-      "description": "After a grueling battle, Vorlag was defeated. On his altar, they found the Tidejewel, an artifact said to control local currents. As Elara grabbed it, the temple began to shake violently, a failsafe triggered by Vorlag's demise. The party raced out, dodging falling debris and surging waters, making it back to the entrance just as the main chamber collapsed.",
-      "image_prompt": "Adventurers frantically escaping a crumbling underwater temple. One clutches a glowing blue jewel. Water surges around them, debris falls. The exit is a distant point of light. Sense of urgency and danger. Fantasy illustration."
+      "description": "The battle was intense and tactical, with enemies casting dispel magic to counter the party’s plant growth spell that had slowed their movement by overgrowing the area with thick vines. Joe Bangles and Donnie coordinated attacks, utilizing Hunter’s Mark and ranged strikes to chip away at the undead, while Shifty cast Moonbeam and Starry Whisp to deal radiant damage. Bron’s relentless axe swings and frenzy attacks cleaved through multiple foes, turning the tide of battle. Despite suffering paralysis and necrotic damage that reduced their maximum hit points, the party persevered, employing spells like Hold Person and Thunderwave to control the battlefield.",
+      "image_prompt": "Adventurers frantically escaping a crumbling underwater temple. One clutches a glowing blue jewel. Water surges around them, debris falls. The exit is a distant point of light. Sense of urgency and danger."
     }
   ]
 }
@@ -108,6 +110,7 @@ mutation UpdateSession($input: UpdateSessionInput!, $condition: ModelSessionCond
     _version
     transcriptionStatus
     tldr
+    primaryImage # Added primaryImage to response
     errorMessage
     updatedAt
   }
@@ -121,6 +124,7 @@ mutation CreateSegment($input: CreateSegmentInput!) {
     title
     description
     image
+    index # Added index to response
     sessionSegmentsId
     owner
     createdAt
@@ -191,11 +195,11 @@ def generate_and_upload_image(
             print(f"Generating image ... prompt: '{full_prompt}'")
 
         response = openai_client.images.generate(
-            model="gpt-image-1",
+            model="gpt-image-1", # User requested not to change model IDs
             prompt=full_prompt,
             n=1,
-            size="1536x1024",
-            quality="low"
+            size="1536x1024", # User requested not to change parameters
+            quality="low" # User requested not to change parameters
         )
 
         if response.data and response.data[0].b64_json:
@@ -221,7 +225,7 @@ def generate_and_upload_image(
         else:
             print("Failed to generate image or received no b64_json data from OpenAI. The API response structure might have changed or an error occurred.")
             if debug and response:
-                 print(f"OpenAI API Response Data: {response.data}")
+                print(f"OpenAI API Response Data: {response.data}")
             return None
 
     except openai.APIError as e: 
@@ -245,20 +249,20 @@ def parse_session_id_from_stem(filename_stem: str) -> Optional[str]:
     Example: 'campaign727cc722-1e8a-40b9-bf33-c9a5d982f629Session4ad02dcd-38c1-48b3-a0c2-b04ee9e1efbf'
     Returns the Session UUID (e.g., '4ad02dcd-38c1-48b3-a0c2-b04ee9e1efbf') or None if not found.
     """
-    # Regex to find 'Session' followed by a UUID
-    # UUID pattern: 8-4-4-4-12 hexadecimal characters
     match = re.search(r"Session([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", filename_stem)
     if match:
-        return match.group(1) # Return the captured UUID part
+        return match.group(1) 
     return None
 
 # --- Lambda Handler ---
 def lambda_handler(event, context):
-    session_info = None # Will store the fetched session data
-    key = None # S3 key for the transcript file
+    session_info = None 
+    key = None 
     debug = True 
     s3_image_upload_bucket = None
-    updated_session_data = None # Stores result of UpdateSession mutation
+    # updated_session_data will store the result of the *final* UpdateSession mutation if successful
+    # It's also used by the exception handler to get the latest version if an error occurs.
+    updated_session_data_from_final_update = None 
 
     try:
         if debug:
@@ -285,39 +289,35 @@ def lambda_handler(event, context):
             print(f"Original S3 filename (from event object key): {original_filename_with_ext}")
             print(f"Filename stem for AppSync search AND metadata: {filename_stem_for_search}")
 
-        # --- Attempt to parse Session ID from filename stem ---
         parsed_session_id = parse_session_id_from_stem(filename_stem_for_search)
 
         if not parsed_session_id:
-            msg = f"Could not parse Session ID from filename stem: '{filename_stem_for_search}'. Cannot proceed with direct GetSession query."
+            msg = f"Could not parse Session ID from filename stem: '{filename_stem_for_search}'. Cannot proceed."
             print(msg)
             raise ValueError(msg)
         
         if debug:
             print(f"Parsed Session ID for direct query: {parsed_session_id}")
 
-        # --- Fetch Session directly using GetSession query ---
         print(f"Attempting to fetch Session directly with ID: {parsed_session_id}")
         get_session_vars = {"id": parsed_session_id}
         session_response_gql = execute_graphql_request(GET_SESSION_QUERY, get_session_vars)
 
         if "errors" in session_response_gql and not session_response_gql.get("data"):
-            # This case handles GraphQL errors where no data is returned at all
             raise Exception(f"Critical error fetching session via GetSession(id: {parsed_session_id}): {session_response_gql['errors']}")
 
-        # Check if the session was actually found
-        # AppSync returns data: { getSession: null } if the item is not found with a valid ID
-        found_matching_session = session_response_gql.get("data", {}).get("getSession")
+        session_info = session_response_gql.get("data", {}).get("getSession") # Store initial session data
 
-        if not found_matching_session:
+        if not session_info:
             msg = f"No AppSync Session found via GetSession for ID '{parsed_session_id}' derived from filename stem '{filename_stem_for_search}'."
             print(msg)
-            raise ValueError(msg) # Or handle as a non-fatal error if preferred, but per request, no fallback.
+            raise ValueError(msg) 
         
         if debug:
-            print(f"Successfully fetched session via GetSession: {json.dumps(found_matching_session)}")
-        # --- End of direct GetSession logic ---
-
+            print(f"Successfully fetched session via GetSession: {json.dumps(session_info)}")
+        
+        session_id = session_info["id"]
+        initial_session_version = session_info["_version"] # Store initial version for final update
 
         # --- Fetch Session Metadata ---
         session_metadata_content = {}
@@ -331,36 +331,20 @@ def lambda_handler(event, context):
 
         if debug:
             print(f"Attempting to fetch session metadata from: s3://{s3_transcript_bucket}/{metadata_s3_key}")
-
         try:
             metadata_obj = s3_client.get_object(Bucket=s3_transcript_bucket, Key=metadata_s3_key)
             metadata_file_content = metadata_obj['Body'].read().decode('utf-8')
             session_metadata_content = json.loads(metadata_file_content)
-            if debug:
-                print(f"Successfully fetched and parsed metadata: {json.dumps(session_metadata_content)}")
-
+            if debug: print(f"Successfully fetched and parsed metadata: {json.dumps(session_metadata_content)}")
             metadata_instructions_str = session_metadata_content.get("instructions", "Not provided.")
             adventurers_list = session_metadata_content.get("adventurers")
-            if adventurers_list and isinstance(adventurers_list, list):
-                metadata_adventurers_str = "\n- " + "\n- ".join(adventurers_list) if adventurers_list else "Not provided."
-            else:
-                 metadata_adventurers_str = "Not provided or invalid format."
-
+            metadata_adventurers_str = "\n- " + "\n- ".join(adventurers_list) if adventurers_list and isinstance(adventurers_list, list) else "Not provided or invalid format."
             locations_list = session_metadata_content.get("locations")
-            if locations_list and isinstance(locations_list, list):
-                metadata_locations_str = "\n- " + "\n- ".join(locations_list) if locations_list else "Not provided."
-            else:
-                metadata_locations_str = "Not provided or invalid format."
-
+            metadata_locations_str = "\n- " + "\n- ".join(locations_list) if locations_list and isinstance(locations_list, list) else "Not provided or invalid format."
             npcs_list = session_metadata_content.get("npcs")
-            if npcs_list and isinstance(npcs_list, list):
-                metadata_npcs_str = "\n- " + "\n- ".join(npcs_list) if npcs_list else "Not provided."
-            else:
-                metadata_npcs_str = "Not provided or invalid format."
-
+            metadata_npcs_str = "\n- " + "\n- ".join(npcs_list) if npcs_list and isinstance(npcs_list, list) else "Not provided or invalid format."
         except s3_client.exceptions.NoSuchKey:
-            if debug:
-                print(f"Metadata file not found at {metadata_s3_key}. Proceeding without it.")
+            if debug: print(f"Metadata file not found at {metadata_s3_key}. Proceeding without it.")
         except json.JSONDecodeError as e:
             print(f"Error decoding metadata JSON from {metadata_s3_key}: {e}. Proceeding without it.")
         except Exception as e:
@@ -368,77 +352,46 @@ def lambda_handler(event, context):
             traceback.print_exc()
         # --- End of Fetch Session Metadata ---
 
-        session_info = found_matching_session # Assign the directly fetched session
-        session_id = session_info["id"]
-        session_version = session_info["_version"]
-
         segment_owner_value_for_appsync = None
         session_table = dynamodb_resource.Table(DYNAMODB_TABLE_NAME)
-
         try:
             if debug: print(f"Fetching session item directly from DynamoDB table '{DYNAMODB_TABLE_NAME}' using ID: {session_id} (for owner field)")
-            response_ddb = session_table.get_item(Key={'id': session_id}) # session_id here is already the parsed_session_id
-
+            response_ddb = session_table.get_item(Key={'id': session_id})
             if 'Item' in response_ddb:
                 dynamodb_session_item = response_ddb['Item']
                 segment_owner_value_for_appsync = dynamodb_session_item.get("owner")
                 if debug: print(f"Owner value retrieved directly from DynamoDB: '{segment_owner_value_for_appsync}'")
-
-                if not segment_owner_value_for_appsync:
-                    print(f"Warning: 'owner' field is missing or empty in DynamoDB item for Session {session_id}.")
-                elif "::" not in segment_owner_value_for_appsync:
-                    print(f"Warning: Session {session_id} owner field ('{segment_owner_value_for_appsync}') from DynamoDB " +
-                          "does not contain '::'. It might not be in the expected 'cognitoId::username' format.")
-            else:
-                # This case should ideally not happen if GetSession was successful, but good to log.
-                print(f"Warning: Session item with ID '{session_id}' was found by GetSession but NOT found directly in DynamoDB table '{DYNAMODB_TABLE_NAME}' for owner lookup. " +
-                      "This might indicate a slight delay or consistency issue if GetSession reads from a replica. Proceeding without owner for segments if not found.")
+                if not segment_owner_value_for_appsync: print(f"Warning: 'owner' field is missing or empty in DynamoDB item for Session {session_id}.")
+                elif "::" not in segment_owner_value_for_appsync: print(f"Warning: Session {session_id} owner field ('{segment_owner_value_for_appsync}') from DynamoDB does not contain '::'.")
+            else: print(f"Warning: Session item with ID '{session_id}' NOT found directly in DynamoDB table '{DYNAMODB_TABLE_NAME}' for owner lookup.")
         except Exception as ddb_e:
-            print(f"Error fetching session owner directly from DynamoDB table '{DYNAMODB_TABLE_NAME}': {str(ddb_e)}. " +
-                  "Segments may be created without an owner or with a null owner.")
+            print(f"Error fetching session owner directly from DynamoDB table '{DYNAMODB_TABLE_NAME}': {str(ddb_e)}. Segments may be created without an owner.")
             traceback.print_exc()
-
-        if not segment_owner_value_for_appsync:
-            print(f"Warning: Session {session_id} will have segments created with a null or empty owner due to issues fetching/finding it from DynamoDB. " +
-                  "Please check DynamoDB table and previous logs.")
+        if not segment_owner_value_for_appsync: print(f"Warning: Session {session_id} will have segments created with a null or empty owner.")
 
         if debug:
-            print(f"Using Session ID: {session_id} (v: {session_version}), " +
-                  f"Effective Segment Owner for AppSync (from DDB direct read): {segment_owner_value_for_appsync}")
+            print(f"Using Session ID: {session_id} (initial_v: {initial_session_version}), Effective Segment Owner: {segment_owner_value_for_appsync}")
 
         campaign_id = session_info.get("campaign", {}).get("id")
         if not campaign_id: print(f"Warning: Session {session_id} lacks campaign ID. NPC context will be limited.")
         if debug: print(f"Associated audioFile from GetSession AppSync: {session_info.get('audioFile')}")
 
-
         npc_context_string_campaign = "No specific NPC context available from campaign."
         if campaign_id:
             print(f"Fetching NPCs for Campaign ID: {campaign_id}")
-            all_npc_items = []
-            npc_current_next_token = None
-            npc_pages_queried = 0 # MAX_PAGES still used here for NPC pagination
-            MAX_PAGES_NPC = 25 # Can be a different constant if needed for NPCs
+            all_npc_items, npc_current_next_token, npc_pages_queried, MAX_PAGES_NPC = [], None, 0, 25
             while npc_pages_queried < MAX_PAGES_NPC: 
                 npc_pages_queried +=1
                 npc_query_vars = {"campaignId": campaign_id, "limit": 50, "nextToken": npc_current_next_token}
                 npc_response_gql = execute_graphql_request(GET_NPCS_BY_CAMPAIGN_QUERY, npc_query_vars)
                 if "errors" in npc_response_gql and not npc_response_gql.get("data"):
-                    print(f"Warning: GraphQL error during GetNpcs: {npc_response_gql['errors']}. Proceeding without full NPC context from campaign.")
-                    break
+                    print(f"Warning: GraphQL error during GetNpcs: {npc_response_gql['errors']}. Proceeding without full NPC context."); break
                 npc_data = npc_response_gql.get("data", {}).get("campaignNpcsByCampaignId", {})
-                npc_items_on_page = npc_data.get("items", [])
-                all_npc_items.extend(npc_items_on_page)
+                all_npc_items.extend(npc_data.get("items", []))
                 npc_current_next_token = npc_data.get("nextToken")
                 if not npc_current_next_token: break
-            
-            npc_details = [
-                f"- {item.get('nPC', {}).get('name', 'Unknown NPC')}: {item.get('nPC', {}).get('brief', 'No brief available.')}"
-                for item in all_npc_items if item.get("nPC")
-            ]
-            if npc_details:
-                npc_context_string_campaign = "Relevant NPCs in this campaign:\n" + "\n".join(npc_details)
-            else:
-                npc_context_string_campaign = "No NPCs found or retrieved for this campaign."
+            npc_details = [f"- {item.get('nPC', {}).get('name', 'Unknown NPC')}: {item.get('nPC', {}).get('brief', 'No brief.')}" for item in all_npc_items if item.get("nPC")]
+            npc_context_string_campaign = "Relevant NPCs in this campaign:\n" + "\n".join(npc_details) if npc_details else "No NPCs found for this campaign."
             if debug: print(f"NPC Context String (Campaign):\n{npc_context_string_campaign}")
         else:
             if debug: print("Skipping NPC fetch as Campaign ID is missing.")
@@ -452,9 +405,9 @@ def lambda_handler(event, context):
 Your task is to process a TTRPG session transcript and generate:
 1. A TLDR (Too Long; Didn't Read): A very brief, one or two sentence summary of the entire session.
 2. Session Segments: A list of chronological segments. Each segment must have:
-   a. 'title': A clear title for the segment.
-   b. 'description': A detailed narrative of events, actions, character interactions, plot twists, and key moments in that segment.
-   c. 'image_prompt': A concise, visually descriptive prompt (max 2-3 sentences) suitable for generating an image for this segment using a model like DALL-E. This prompt should capture the visual essence of the segment (key characters, setting, action, mood). DO NOT include the prefix 'fantasy-style painting in the dungeons and dragons DND theme... ' in this 'image_prompt' field; the system will add it automatically.
+  a. 'title': A clear title for the segment.
+  b. 'description': A very detailed narrative of events, actions, character interactions, plot twists, and key moments in that segment (5-8 sentences)
+  c. 'image_prompt': A concise, visually descriptive prompt (max 2-3 sentences) suitable for generating an image for this segment using a model like DALL-E. This prompt should capture the visual essence of the segment (key characters, setting, action, mood). DO NOT include the prefix 'fantasy-style painting in the dungeons and dragons DND theme... ' in this 'image_prompt' field; the system will add it automatically.
 
 The output must be a JSON object matching the Pydantic model `SummaryElements` which includes `tldr` (a string) and `sessionSegments` (a list of objects, where each object has `title` (string), `description` (string), and `image_prompt` (string)).
 
@@ -505,25 +458,22 @@ Guidelines for Segments:
         if debug:
             print(f"Full prompt for OpenAI:\n{prompt[:1000]}...\n...\n...{prompt[-500:]}") 
 
-        def get_openai_summary_segments_with_image_prompts(prompt_text: str, model: str = "gpt-4o-mini") -> Optional[SummaryElements]:
+        def get_openai_summary_segments_with_image_prompts(prompt_text: str, model: str = "gpt-4.1-mini") -> Optional[SummaryElements]:
             messages = [{"role": "user", "content": prompt_text}]
             try:
                 completion = openai_client.chat.completions.create(
-                    model=model,
+                    model=model, # User requested not to change model IDs
                     messages=messages,
                     response_format={"type": "json_object"},
-                    temperature=0.2,
+                    temperature=0.2, # User requested not to change parameters
                 )
                 if completion.choices and completion.choices[0].message and completion.choices[0].message.content:
                     json_content = completion.choices[0].message.content
                     if debug: print(f"Raw OpenAI JSON (summary/segments/prompts):\n{json_content}")
                     return SummaryElements.model_validate_json(json_content)
-                else:
-                    print("OpenAI response for summary/segments lacked content or choices."); return None
-            except openai.APIError as e:
-                print(f"OpenAI API error during summary/segment generation: {e}"); return None
-            except Exception as e:
-                print(f"Error calling OpenAI for summary/segments or parsing/validating response: {e}"); traceback.print_exc(); return None
+                else: print("OpenAI response for summary/segments lacked content or choices."); return None
+            except openai.APIError as e: print(f"OpenAI API error during summary/segment generation: {e}"); return None
+            except Exception as e: print(f"Error calling OpenAI for summary/segments or parsing/validating response: {e}"); traceback.print_exc(); return None
 
         summary_elements_response = get_openai_summary_segments_with_image_prompts(prompt)
 
@@ -543,39 +493,20 @@ Guidelines for Segments:
             ContentType='application/json'
         )
         print(f"Summary (TLDR, Segments, Image Prompts) saved to S3: s3://{s3_transcript_bucket}/{s3_summary_output_key}")
-
-        print(f"Updating Session {session_id} with TLDR and status via AppSync...")
-        update_input = {
-            "id": session_id,
-            "_version": session_version,
-            "transcriptionStatus": "READ",
-            "tldr": [summary_elements_response.tldr] if summary_elements_response.tldr else [],
-            "errorMessage": None
-        }
-        update_vars = {"input": update_input}
-
-        update_response_gql = execute_graphql_request(UPDATE_SESSION_MUTATION, update_vars)
-        if "errors" in update_response_gql and not update_response_gql.get("data", {}).get("updateSession"):
-            raise Exception(f"AppSync mutation to update Session failed: {update_response_gql['errors']}")
-
-        updated_session_data = update_response_gql.get("data", {}).get("updateSession")
-        if not updated_session_data or "_version" not in updated_session_data:
-            raise Exception("AppSync Session update mutation returned no data, unexpected structure, or missing _version.")
-
-        session_version = updated_session_data["_version"]
-        print(f"Successfully updated Session {session_id}. New version: {session_version}")
-
+        
+        # --- Segment Processing and Image Generation ---
         print(f"Processing {len(summary_elements_response.sessionSegments)} segments for image generation and AppSync creation...")
-        created_segment_details = []
+        created_segment_appsync_details = []
         segment_processing_errors = []
+        first_segment_image_s3_key = None # To store the S3 key for the first segment's image
 
         for idx, segment in enumerate(summary_elements_response.sessionSegments):
-            segment_image_key_or_none = None
+            segment_image_s3_key_or_none = None
             try:
                 print(f"Processing segment {idx + 1}/{len(summary_elements_response.sessionSegments)}: '{segment.title}'")
 
                 if segment.image_prompt:
-                    segment_image_key_or_none = generate_and_upload_image(
+                    segment_image_s3_key_or_none = generate_and_upload_image(
                         prompt_suffix=segment.image_prompt,
                         s3_bucket=s3_image_upload_bucket,
                         s3_base_prefix=s3_segment_image_prefix,
@@ -583,6 +514,9 @@ Guidelines for Segments:
                         segment_index=idx,
                         debug=debug
                     )
+                    if idx == 0 and segment_image_s3_key_or_none: # Check if it's the first segment and image was generated
+                        first_segment_image_s3_key = segment_image_s3_key_or_none
+                        if debug: print(f"First segment image S3 key set to: {first_segment_image_s3_key}")
                 else:
                     if debug: print(f"Skipping image generation for segment '{segment.title}' as image_prompt is empty.")
 
@@ -590,14 +524,13 @@ Guidelines for Segments:
                     "sessionSegmentsId": session_id,
                     "title": segment.title,
                     "description": [segment.description] if segment.description else [],
-                    "image": segment_image_key_or_none,
-                    "owner": segment_owner_value_for_appsync
+                    "image": segment_image_s3_key_or_none,
+                    "owner": segment_owner_value_for_appsync,
+                    "index": -idx # Added 0-based index
                 }
                 
                 if segment_owner_value_for_appsync is None:
-                     print(f"Warning: Attempting to create segment '{segment.title}' for session '{session_id}' with a null owner value for AppSync (derived from DynamoDB read). " +
-                           "This might cause an error if the 'owner' field is mandatory in your 'CreateSegmentInput' or Segment schema.")
-
+                    print(f"Warning: Attempting to create segment '{segment.title}' for session '{session_id}' with a null owner value.")
 
                 segment_vars = {"input": create_segment_input}
                 segment_response = execute_graphql_request(CREATE_SEGMENT_MUTATION, segment_vars)
@@ -607,39 +540,59 @@ Guidelines for Segments:
                     created_segment_data = segment_response["data"].get("createSegment")
 
                 if created_segment_data and created_segment_data.get("id"):
-                    created_segment_details.append(created_segment_data)
-                    print(f"Successfully created segment ID: {created_segment_data['id']} - '{segment.title}' (Image Key: {created_segment_data.get('image', 'N/A')}, Owner: {created_segment_data.get('owner')})")
+                    created_segment_appsync_details.append(created_segment_data)
+                    print(f"Successfully created segment ID: {created_segment_data['id']} - '{segment.title}' (Index: {created_segment_data.get('index')}, Image Key: {created_segment_data.get('image', 'N/A')}, Owner: {created_segment_data.get('owner')})")
                 else:
                     appsync_errors = segment_response.get('errors') if isinstance(segment_response, dict) else 'execute_graphql_request returned non-dict or None for segment creation'
-                    error_details_str = "No specific error details in response for segment creation."
-                    if isinstance(appsync_errors, list) and len(appsync_errors) > 0:
-                        error_details_str = json.dumps(appsync_errors)
-                    elif appsync_errors:
-                        error_details_str = str(appsync_errors)
-                    
+                    error_details_str = json.dumps(appsync_errors) if isinstance(appsync_errors, list) and len(appsync_errors) > 0 else str(appsync_errors) if appsync_errors else "No specific error details in response."
                     err_msg = f"Failed to create segment '{segment.title}' in AppSync or no segment data returned. AppSync Response: {error_details_str}"
                     print(err_msg)
                     segment_processing_errors.append(err_msg)
-
-                    if isinstance(error_details_str, str) and "The variables input contains a field that is not defined for input object type 'CreateSegmentInput'" in error_details_str:
-                        print("ADVICE: The above error indicates a mismatch between the fields sent to AppSync and what the 'CreateSegmentInput' type expects. Please verify your AppSync schema's 'CreateSegmentInput' definition against these fields being sent:")
+                    if "The variables input contains a field that is not defined for input object type 'CreateSegmentInput'" in error_details_str:
+                        print("ADVICE: Verify your AppSync schema's 'CreateSegmentInput' definition against these fields being sent:")
                         print(f"Sent fields for CreateSegmentInput: {list(create_segment_input.keys())}")
-
+            
             except Exception as seg_proc_e:
                 err_msg = f"Exception during processing segment '{segment.title}' (image gen or AppSync create): {str(seg_proc_e)}"
                 print(err_msg); segment_processing_errors.append(err_msg)
                 traceback.print_exc()
 
         if segment_processing_errors:
-            print(f"Completed segment processing with {len(segment_processing_errors)} error(s):")
-            for i, error_detail in enumerate(segment_processing_errors):
-                print(f"  Segment Error {i+1}: {error_detail}")
+            # If there were errors creating segments, do not proceed to set session to READ.
+            # Instead, aggregate errors and raise an exception to be caught by the main handler, which will set session to ERROR.
+            aggregated_error_message = f"Encountered {len(segment_processing_errors)} error(s) during segment processing for session {session_id}. First error: {segment_processing_errors[0]}"
+            print(aggregated_error_message)
+            for i, error_detail in enumerate(segment_processing_errors): print(f"  Segment Error {i+1}: {error_detail}")
+            raise Exception(aggregated_error_message)
 
-        print(f"Successfully processed {len(created_segment_details)} out of {len(summary_elements_response.sessionSegments)} segments for session {session_id}.")
+        print(f"Successfully processed and created {len(created_segment_appsync_details)} out of {len(summary_elements_response.sessionSegments)} segments for session {session_id}.")
+
+        # --- Final Session Update (TLDR, Primary Image, Status to READ) ---
+        print(f"Updating Session {session_id} with TLDR, Primary Image, and status to READ via AppSync...")
+        final_update_input = {
+            "id": session_id,
+            "_version": initial_session_version, # Use the version from the initial GetSession call
+            "transcriptionStatus": "READ",
+            "tldr": [summary_elements_response.tldr] if summary_elements_response.tldr else [],
+            "primaryImage": first_segment_image_s3_key, # Set the primary image from the first segment
+            "errorMessage": None 
+        }
+        final_update_vars = {"input": final_update_input}
+
+        final_update_response_gql = execute_graphql_request(UPDATE_SESSION_MUTATION, final_update_vars)
+        if "errors" in final_update_response_gql and not final_update_response_gql.get("data", {}).get("updateSession"):
+            raise Exception(f"Final AppSync mutation to update Session to READ state failed: {final_update_response_gql['errors']}")
+
+        updated_session_data_from_final_update = final_update_response_gql.get("data", {}).get("updateSession")
+        if not updated_session_data_from_final_update or "_version" not in updated_session_data_from_final_update:
+            raise Exception("Final AppSync Session update mutation (to READ) returned no data, unexpected structure, or missing _version.")
+
+        new_session_version = updated_session_data_from_final_update["_version"]
+        print(f"Successfully updated Session {session_id} to READ state. New version: {new_session_version}. Primary Image: {updated_session_data_from_final_update.get('primaryImage')}")
 
         return {
             'statusCode': 200,
-            'body': json.dumps(f"Processed successfully: {key}. TLDR and {len(created_segment_details)} of {len(summary_elements_response.sessionSegments)} segments created/updated. Errors: {len(segment_processing_errors)}")
+            'body': json.dumps(f"Processed successfully: {key}. TLDR, Primary Image, and {len(created_segment_appsync_details)} segments created/updated. Session status set to READ.")
         }
 
     except Exception as e:
@@ -647,11 +600,11 @@ Guidelines for Segments:
         print(f"FATAL Error processing file {key if key else 'unknown'}: {error_message}")
         traceback.print_exc()
 
-        # Attempt to update session to ERROR state only if session_info was populated (meaning GetSession was successful at least once)
-        if session_info and 'id' in session_info and '_version' in session_info:
+        if session_info and 'id' in session_info: # Check if session_id and initial_version are available
             session_id_for_error = session_info['id']
-            # Use the version from updated_session_data if available (after TLDR update), else from initial session_info
-            session_version_for_error = updated_session_data["_version"] if updated_session_data and "_version" in updated_session_data else session_info['_version']
+            # Use the version from the final update if it happened, otherwise use initial version.
+            # If an error occurred *before* the final update attempt, updated_session_data_from_final_update would be None.
+            session_version_for_error = updated_session_data_from_final_update["_version"] if updated_session_data_from_final_update and "_version" in updated_session_data_from_final_update else session_info.get('_version', 1) # Fallback to initial or 1
             
             print(f"Attempting to update Session {session_id_for_error} to ERROR state (v: {session_version_for_error})...")
             try:

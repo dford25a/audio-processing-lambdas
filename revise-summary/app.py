@@ -64,7 +64,7 @@ query GetSession($id: ID!) {
 """
 
 # Query to list all segments associated with a session
-# FIXED: Removed image_prompt as it's undefined in the Segment type schema
+# ADDED: index to items
 LIST_SEGMENTS_BY_SESSION_QUERY = """
 query ListSegmentsBySession($sessionSegmentsId: ID!, $limit: Int, $nextToken: String) {
   listSegments(filter: {sessionSegmentsId: {eq: $sessionSegmentsId}}, limit: $limit, nextToken: $nextToken) {
@@ -73,7 +73,7 @@ query ListSegmentsBySession($sessionSegmentsId: ID!, $limit: Int, $nextToken: St
       _version
       title
       description
-      # image_prompt # REMOVED: Field 'image_prompt' in type 'Segment' is undefined
+      index # ADDED: Fetch the index of the segment
       owner
     }
     nextToken
@@ -94,8 +94,7 @@ mutation UpdateSession($input: UpdateSessionInput!) {
 """
 
 # Mutation to update an individual segment
-# image_prompt is removed from the fields being explicitly updated here,
-# as the input to this mutation will not contain it.
+# index is part of UpdateSegmentInput and will be passed if present in the input object
 UPDATE_SEGMENT_MUTATION = """
 mutation UpdateSegment($input: UpdateSegmentInput!) {
   updateSegment(input: $input) {
@@ -103,14 +102,12 @@ mutation UpdateSegment($input: UpdateSegmentInput!) {
     _version
     title
     description
-    # image_prompt is not updated by this lambda anymore (comment retained for context)
-    image # The S3 key for the image, if it were being updated (it's not here)
+    image 
+    index # Ensure index is returned if updated
     updatedAt
   }
 }
 """
-# Note: The `image` field is still in the mutation's return selection, which is fine.
-# The important part is that `update_segment_input` will not contain `image_prompt`.
 
 # --- AppSync Helper Function ---
 def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = None, debug: bool = True) -> Dict[str, Any]:
@@ -124,7 +121,7 @@ def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = No
 
     try:
         response = requests.post(APPSYNC_API_URL, headers=headers, json=payload, timeout=90)
-        response.raise_for_status() # Raises HTTPError for bad responses (4XX or 5XX)
+        response.raise_for_status() 
         response_json = response.json()
 
         if "errors" in response_json:
@@ -135,7 +132,7 @@ def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = No
         response_text = response.text if 'response' in locals() and hasattr(response, 'text') else 'Response object or text not available'
         if debug: print(f"JSONDecodeError making AppSync request: {e}. Response text: {response_text}")
         return {"errors": [{"message": f"JSONDecodeError: {e}. Response was not valid JSON."}]}
-    except requests.exceptions.RequestException as e: # Includes HTTPError, ConnectionError, Timeout, etc.
+    except requests.exceptions.RequestException as e: 
         if debug: print(f"Error making AppSync request: {e}")
         return {"errors": [{"message": f"RequestException: {e}"}]}
     except Exception as e:
@@ -198,7 +195,6 @@ def lambda_handler(event, context):
 
         current_session_data = session_gql_response.get("data", {}).get("getSession")
         if not current_session_data:
-            # Use .get('errors') safely, as execute_graphql_request always returns a dict
             error_msg = f"Failed to fetch session {session_id_from_request} or session not found. AppSync Errors: {session_gql_response.get('errors')}"
             if debug: print(error_msg)
             return {'statusCode': 404, 'body': json.dumps({'error': error_msg})}
@@ -234,44 +230,45 @@ def lambda_handler(event, context):
                 debug=debug
             )
 
-            # FIXED: Robustly parse the response to avoid AttributeError
-            data_field = segments_gql_response.get("data") # data_field can be None if "data": null
+            data_field = segments_gql_response.get("data") 
             segment_data_page = None
-            if data_field is not None: # Check if data_field is a dictionary before calling .get()
+            if data_field is not None: 
                 segment_data_page = data_field.get("listSegments")
 
             if not segment_data_page:
-                # This block handles cases where listSegments is null, missing, or "data" itself was null/missing.
                 gql_errors = segments_gql_response.get('errors')
                 error_msg = f"Failed to fetch segments or no segments found on page {segment_page_count} for session {session_id_from_request}."
-                if gql_errors:
-                    error_msg += f" AppSync Errors: {json.dumps(gql_errors)}"
-                
+                if gql_errors: error_msg += f" AppSync Errors: {json.dumps(gql_errors)}"
                 if debug: print(error_msg)
+                if not original_segments_from_appsync and gql_errors:
+                    return {'statusCode': 500, 'body': json.dumps({'error': f"Error fetching segments: {json.dumps(gql_errors)}"})}
+                break 
 
-                if not original_segments_from_appsync: # If first page fails or is empty
-                    if gql_errors: # If there were actual GraphQL errors reported
-                        return {'statusCode': 500, 'body': json.dumps({'error': f"Error fetching segments: {json.dumps(gql_errors)}"})}
-                    # If no GQL errors but segment_data_page is still None/empty, it means no segments found on this page.
-                    # The loop will break, and the check after the loop will handle "No segments found overall".
-                break # Stop pagination if current page has no segment data or an error occurred
-
-            # If segment_data_page is valid (not None and likely a dict)
             items_on_page = segment_data_page.get("items", [])
             original_segments_from_appsync.extend(items_on_page)
             next_token_segments = segment_data_page.get("nextToken")
-
-            if not next_token_segments:
-                break
+            if not next_token_segments: break
         
         if not original_segments_from_appsync:
-            # This is reached if the loop completes and no segments were added,
-            # or if an early break occurred on the first page without specific GQL errors being returned as a 500.
             return {'statusCode': 404, 'body': json.dumps({'error': f"No segments found for session {session_id_from_request} to revise."})}
-        if debug: print(f"Fetched {len(original_segments_from_appsync)} segments.")
+        
+        # Sort fetched segments by index to ensure correct order
+        # Handle cases where index might be None or missing for robustness, defaulting to a large number to push them to the end or 0 for start.
+        # Assuming index is an integer if present.
+        def get_segment_index(segment):
+            idx = segment.get('index')
+            if idx is None:
+                if debug: print(f"Warning: Segment ID {segment.get('id')} is missing an index. Defaulting for sort.")
+                return float('inf') # Or 0, depending on desired behavior for missing indices
+            return idx
+
+        original_segments_from_appsync.sort(key=get_segment_index)
+        if debug: 
+            print(f"Fetched and sorted {len(original_segments_from_appsync)} segments. Indices: {[s.get('index') for s in original_segments_from_appsync]}")
+
 
         # 3. Fetch Original Transcript Text from S3
-        if not BUCKET_NAME: # Should have been caught by initial validation, but good for defense.
+        if not BUCKET_NAME: 
             return {'statusCode': 500, 'body': json.dumps({'error': 'BUCKET_NAME environment variable not set.'})}
 
         if debug: print(f"Fetching transcript from S3: bucket='{BUCKET_NAME}', key='{constructed_transcript_s3_key}'")
@@ -279,7 +276,7 @@ def lambda_handler(event, context):
             s3_object = s3_client.get_object(Bucket=BUCKET_NAME, Key=constructed_transcript_s3_key)
             original_transcript_text = s3_object['Body'].read().decode('utf-8')
             if not original_transcript_text.strip():
-                raise ValueError(f"Transcript file from S3 (s3://{BUCKET_NAME}/{constructed_transcript_s3_key}) is empty or contains only whitespace.")
+                raise ValueError(f"Transcript file from S3 (s3://{BUCKET_NAME}/{constructed_transcript_s3_key}) is empty.")
             if debug: print(f"Transcript fetched successfully. Length: {len(original_transcript_text)}")
         except s3_client.exceptions.NoSuchKey:
             error_msg = f"Transcript file not found in S3 at s3://{BUCKET_NAME}/{constructed_transcript_s3_key}"
@@ -290,16 +287,14 @@ def lambda_handler(event, context):
             if debug: print(error_msg); traceback.print_exc()
             return {'statusCode': 500, 'body': json.dumps({'error': error_msg})}
 
-        # 4. Prepare current segment data for the LLM prompt
+        # 4. Prepare current segment data for the LLM prompt (using sorted segments)
         segments_for_llm_prompt = []
-        for seg_data in original_segments_from_appsync:
+        for seg_data in original_segments_from_appsync: # Iterate over sorted segments
             desc_list = seg_data.get("description", [])
             desc_str = desc_list[0] if desc_list and isinstance(desc_list, list) else (desc_list if isinstance(desc_list, str) else "")
-
             segments_for_llm_prompt.append(SegmentContentForLLM(
                 title=seg_data.get("title", "Untitled Segment"),
                 description=desc_str
-                # image_prompt is no longer part of SegmentContentForLLM
             ))
 
         # 5. Construct LLM Prompt
@@ -307,13 +302,13 @@ def lambda_handler(event, context):
 You will be provided with:
 1. The original full session transcript.
 2. The current TLDR (Too Long; Didn't Read) summary.
-3. A list of current Session Segments, each with a 'title' and 'description'.
+3. A list of current Session Segments, each with a 'title' and 'description', presented in their chronological order.
 4. User's specific revision requests.
 
 Your task is to:
 - Revise the TLDR based on the transcript and the user's requests.
 - Revise each Session Segment's title and description based on the transcript and user's requests.
-- IMPORTANT: You MUST return the same number of segments as you were given in the 'Current Session Segments' list. Do not add or remove segments. Revise them in place, maintaining their order.
+- IMPORTANT: You MUST return the same number of segments as you were given in the 'Current Session Segments' list. Do not add or remove segments. Revise them in place, maintaining their original order.
 - Ensure your output is a single, valid JSON object.
 
 Original Full Session Transcript:
@@ -324,7 +319,7 @@ Original Full Session Transcript:
 Current TLDR:
 {current_tldr_str}
 
-Current Session Segments (JSON array format, note: image_prompt is not included):
+Current Session Segments (JSON array format, in chronological order):
 {json.dumps([s.model_dump() for s in segments_for_llm_prompt], indent=2)}
 
 User's Revision Requests:
@@ -380,9 +375,11 @@ Example of the required JSON output structure:
         if not session_update_successful:
             error_msg_session_update = f"Failed to update Session TLDR for {session_id_from_request}. AppSync Errors: {update_session_gql_response.get('errors')}"
             if debug: print(f"Warning: {error_msg_session_update}")
-            # Continue to update segments even if TLDR update fails, but report it.
         else:
             if debug: print(f"Session {session_id_from_request} TLDR updated successfully. New version: {update_session_gql_response['data']['updateSession'].get('_version')}")
+            # Update session_version for subsequent segment updates if TLDR update was successful
+            session_version = update_session_gql_response['data']['updateSession']['_version']
+
 
         # 8. Update Segments in AppSync
         if debug: print(f"Updating {len(llm_data.revised_sessionSegments)} segments.")
@@ -390,17 +387,22 @@ Example of the required JSON output structure:
         successful_segment_updates = 0
 
         for i, revised_segment_content in enumerate(llm_data.revised_sessionSegments):
-            original_segment_data = original_segments_from_appsync[i]
+            original_segment_data = original_segments_from_appsync[i] # Use the sorted original segment data
 
             update_segment_input = {
                 "id": original_segment_data["id"],
-                "_version": original_segment_data["_version"],
+                "_version": original_segment_data["_version"], # Use the segment's own version
                 "title": revised_segment_content.title,
                 "description": [revised_segment_content.description] if revised_segment_content.description is not None else [],
-                # image_prompt is no longer included in the input for updating the segment
+                "index": original_segment_data.get("index") # Pass the original index back
             }
+            # Remove index from input if it's None, in case the schema doesn't allow null for index on update
+            if update_segment_input["index"] is None:
+                if debug: print(f"Segment ID {original_segment_data['id']} has a None index; not including in update input.")
+                del update_segment_input["index"]
 
-            if debug: print(f"Attempting to update segment ID {original_segment_data['id']} (index {i}) with title '{revised_segment_content.title}'")
+
+            if debug: print(f"Attempting to update segment ID {original_segment_data['id']} (original index {original_segment_data.get('index')}) with title '{revised_segment_content.title}'")
             update_segment_gql_response = execute_graphql_request(UPDATE_SEGMENT_MUTATION, {"input": update_segment_input}, debug=debug)
 
             if not update_segment_gql_response.get("data", {}).get("updateSegment"):
@@ -409,7 +411,7 @@ Example of the required JSON output structure:
                 if debug: print(f"Error: {err_detail}")
                 segment_update_errors.append(err_detail)
             else:
-                if debug: print(f"Segment {original_segment_data['id']} updated successfully. New version: {update_segment_gql_response['data']['updateSegment'].get('_version')}")
+                if debug: print(f"Segment {original_segment_data['id']} updated successfully. New version: {update_segment_gql_response['data']['updateSegment'].get('_version')}, Index: {update_segment_gql_response['data']['updateSegment'].get('index')}")
                 successful_segment_updates += 1
 
         # 9. Final Response
@@ -439,7 +441,7 @@ Example of the required JSON output structure:
             })
         }
 
-    except json.JSONDecodeError as e: # For errors parsing the initial request body
+    except json.JSONDecodeError as e: 
         if debug: print(f"JSON Decode Error in handler (likely request body): {str(e)}")
         return {'statusCode': 400, 'body': json.dumps({'error': f'Invalid JSON in request body: {str(e)}'})}
     except Exception as e:
