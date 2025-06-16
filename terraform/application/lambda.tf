@@ -59,7 +59,7 @@ resource "aws_lambda_function" "segment_audio" {
   function_name = "segment-audio${local.config.function_suffix}"
   role          = aws_iam_role.lambda_exec_role.arn
   package_type  = "Image"
-  image_uri     = "${data.aws_ecr_repository.segment_audio.repository_url}:latest"
+  image_uri     = "${data.aws_ecr_repository.segment_audio.repository_url}:${var.environment}"
   
   timeout     = 600 
   memory_size = 10240
@@ -92,7 +92,7 @@ resource "aws_lambda_function" "transcribe" {
   function_name = "transcribe${local.config.function_suffix}"
   role          = aws_iam_role.lambda_exec_role.arn
   package_type  = "Image"
-  image_uri     = "${data.aws_ecr_repository.faster_whisper.repository_url}:latest"
+  image_uri     = "${data.aws_ecr_repository.faster_whisper.repository_url}:${var.environment}"
   
   timeout     = 600
   memory_size = 5308
