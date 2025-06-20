@@ -199,11 +199,11 @@ def handler(event, context):
             if items:
                 item = items[0]
                 if all_successful:
-                    item['transcriptionStatus'] = 'COMPLETED'
+                    item['transcriptionStatus'] = 'PROCESSING'
                 else:
                     item['transcriptionStatus'] = 'ERROR'
                 table.put_item(Item=item)
-                print(f"Updated DynamoDB status to {'COMPLETED' if all_successful else 'ERROR'} for {fn}")
+                print(f"Updated DynamoDB status to {'PROCESSING' if all_successful else 'ERROR'} for {fn}")
         except Exception as db_err:
             print(f"Warning: Could not update DynamoDB completion status: {db_err}")
         
