@@ -33,7 +33,7 @@ resource "aws_iam_role" "lambda_exec_role" {
       },
     ]
   })
-  
+
   tags = {
     Environment = var.environment
   }
@@ -133,7 +133,7 @@ resource "aws_iam_policy" "lambda_invoke" {
   })
 }
 
-# --- NEW: IAM Policy for Lambda to access AppSync ---
+# IAM Policy for Lambda to access AppSync
 resource "aws_iam_policy" "lambda_appsync" {
   name        = "lambda_appsync_access_${var.environment}"
   description = "IAM policy for AppSync GraphQL access from Lambda"
@@ -148,6 +148,24 @@ resource "aws_iam_policy" "lambda_appsync" {
           # Specific permissions for the queries/mutations the final_summary Lambda will use
           "arn:aws:appsync:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:apis/${var.appsync_api_id}/*"
         ]
+      }
+    ]
+  })
+}
+
+# --- NEW: IAM Policy for Lambda to access Bedrock ---
+resource "aws_iam_policy" "lambda_bedrock" {
+  name        = "lambda_bedrock_access_${var.environment}"
+  description = "IAM policy for Bedrock access from Lambda"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = "bedrock:InvokeModel"
+        Effect   = "Allow"
+        # This ARN is specific to the Titan embedding model used in the Python script.
+        Resource = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/amazon.titan-embed-text-v2:0"
       }
     ]
   })
@@ -177,4 +195,10 @@ resource "aws_iam_role_policy_attachment" "lambda_invoke" {
 resource "aws_iam_role_policy_attachment" "lambda_appsync_attachment" {
   role       = aws_iam_role.lambda_exec_role.name
   policy_arn = aws_iam_policy.lambda_appsync.arn
+}
+
+# --- NEW: Attach Bedrock policy to role ---
+resource "aws_iam_role_policy_attachment" "lambda_bedrock_attachment" {
+  role       = aws_iam_role.lambda_exec_role.name
+  policy_arn = aws_iam_policy.lambda_bedrock.arn
 }

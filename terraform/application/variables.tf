@@ -36,8 +36,8 @@ locals {
       function_suffix = "-prod"
     },
     dev = {
-      s3_bucket       = "scribe8a8fcf3f6cb14734bce4bd48352f80433dbd8-devsort"  
-      dynamodb_table  = "Session-a6imejpsvbd67dd44nsarzri2m-devsort"
+      s3_bucket       = "scribe8a8fcf3f6cb14734bce4bd48352f8043acdd4-devsort"  
+      dynamodb_table  = "Session-ebn6wlprprdnvdmndj7wh7ddja-devsort"
       function_suffix = "-dev"
     }
   }

@@ -20,6 +20,8 @@ LAMBDAS=(
   "final-summary"
   "revise-summary"
   "session-chat"
+  "campaign-chat"
+  "create-campaign-index"
 )
 
 BUILD_DIR="build" # Temporary build directory within terraform/application/
