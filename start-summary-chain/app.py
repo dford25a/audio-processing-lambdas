@@ -56,7 +56,8 @@ def lambda_handler(event, context):
 
         # Define the metadata file path and name
         metadata_file_path = "public/session_metadata/"
-        metadata_file_name = f"{audio_filename}.metadata.json"
+        audio_filename_stem = os.path.splitext(audio_filename)[0]
+        metadata_file_name = f"{audio_filename_stem}.metadata.json"
         metadata_s3_key = f"{metadata_file_path}{metadata_file_name}"
 
         # Convert the metadata to JSON

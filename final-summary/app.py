@@ -471,7 +471,7 @@ def lambda_handler(event, context):
                 img_quality = image_quality_lookup.get(quality_key, "standard")
 
                 style_key = image_instructions.get("selectedStyle", "fantasy")
-                img_style_prompt = image_format_lookup.get(style_key, {}).get("longDescription", img_style_prompt)
+                img_style_prompt = image_format_lookup.get(style_key, {}).get("description", img_style_prompt) + ' ' + image_format_lookup.get(style_key, {}).get("longDescription", img_style_prompt)
 
             # --- Parse Other Instructions ---
             metadata_instructions_str = session_metadata_content.get("instructions", "Not provided.")
