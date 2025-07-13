@@ -114,6 +114,36 @@ resource "aws_api_gateway_integration_response" "start_summary_options_integrati
   ]
 }
 
+#################################
+# NEW: stripe-webhook endpoint
+#################################
+
+# API Gateway resource path ("/stripe-webhook")
+resource "aws_api_gateway_resource" "stripe_webhook_resource" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  parent_id   = aws_api_gateway_rest_api.summary_api.root_resource_id
+  path_part   = "stripe-webhook"
+}
+
+# API Gateway method (POST) - NO authorization for webhooks
+resource "aws_api_gateway_method" "stripe_webhook_post" {
+  rest_api_id   = aws_api_gateway_rest_api.summary_api.id
+  resource_id   = aws_api_gateway_resource.stripe_webhook_resource.id
+  http_method   = "POST"
+  authorization = "NONE" # Stripe needs to call this endpoint without credentials
+}
+
+# API Gateway integration with the stripeWebhook Lambda
+resource "aws_api_gateway_integration" "stripe_webhook_lambda_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.summary_api.id
+  resource_id             = aws_api_gateway_resource.stripe_webhook_resource.id
+  http_method             = aws_api_gateway_method.stripe_webhook_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.stripe_webhook.invoke_arn
+}
+
+
 
 #################################
 # revise-summary endpoint
@@ -414,6 +444,110 @@ resource "aws_lambda_permission" "api_gateway_campaign_chat_lambda" {
   source_arn    = "${aws_api_gateway_rest_api.summary_api.execution_arn}/*/${aws_api_gateway_method.campaign_chat_post.http_method}${aws_api_gateway_resource.campaign_chat_resource.path}"
 }
 
+# NEW: Allow API Gateway to invoke the stripe-webhook Lambda function
+resource "aws_lambda_permission" "api_gateway_stripe_webhook_lambda" {
+  statement_id  = "AllowExecutionFromAPIGateway_StripeWebhook"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.stripe_webhook.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.summary_api.execution_arn}/*/${aws_api_gateway_method.stripe_webhook_post.http_method}${aws_api_gateway_resource.stripe_webhook_resource.path}"
+}
+
+
+#################################
+# spend-credits endpoint
+#################################
+
+# API Gateway resource path ("/spend-credits")
+resource "aws_api_gateway_resource" "spend_credits_resource" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  parent_id   = aws_api_gateway_rest_api.summary_api.root_resource_id
+  path_part   = "spend-credits"
+}
+
+# API Gateway method (POST) with Cognito authorization
+resource "aws_api_gateway_method" "spend_credits_post" {
+  rest_api_id   = aws_api_gateway_rest_api.summary_api.id
+  resource_id   = aws_api_gateway_resource.spend_credits_resource.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito_authorizer.id
+}
+
+# Add OPTIONS method for CORS support
+resource "aws_api_gateway_method" "spend_credits_options" {
+  rest_api_id   = aws_api_gateway_rest_api.summary_api.id
+  resource_id   = aws_api_gateway_resource.spend_credits_resource.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+# API Gateway integration with the spend_credits Lambda
+resource "aws_api_gateway_integration" "spend_credits_lambda_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.summary_api.id
+  resource_id             = aws_api_gateway_resource.spend_credits_resource.id
+  http_method             = aws_api_gateway_method.spend_credits_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.spend_credits.invoke_arn
+}
+
+# OPTIONS method MOCK integration for CORS preflight
+resource "aws_api_gateway_integration" "spend_credits_options_integration" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.spend_credits_resource.id
+  http_method = aws_api_gateway_method.spend_credits_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+# Method response for OPTIONS method (200 OK for CORS preflight)
+resource "aws_api_gateway_method_response" "spend_credits_options_200" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.spend_credits_resource.id
+  http_method = aws_api_gateway_method.spend_credits_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true,
+    "method.response.header.Access-Control-Allow-Methods" = true,
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+# Integration response for OPTIONS method
+resource "aws_api_gateway_integration_response" "spend_credits_options_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.spend_credits_resource.id
+  http_method = aws_api_gateway_method.spend_credits_options.http_method
+  status_code = aws_api_gateway_method_response.spend_credits_options_200.status_code
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'",
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+
+  response_templates = {
+    "application/json" = ""
+  }
+
+  depends_on = [
+    aws_api_gateway_integration.spend_credits_options_integration
+  ]
+}
+
+# Allow API Gateway to invoke the spend-credits Lambda function
+resource "aws_lambda_permission" "api_gateway_spend_credits_lambda" {
+  statement_id  = "AllowExecutionFromAPIGateway_SpendCredits"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.spend_credits.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.summary_api.execution_arn}/*/${aws_api_gateway_method.spend_credits_post.http_method}${aws_api_gateway_resource.spend_credits_resource.path}"
+}
 
 #################################
 # API Gateway Deployment and Stage
@@ -463,6 +597,20 @@ resource "aws_api_gateway_deployment" "summary_api_deployment" {
       aws_api_gateway_integration.campaign_chat_options_integration.id,
       aws_api_gateway_method_response.campaign_chat_options_200.id,
       aws_api_gateway_integration_response.campaign_chat_options_integration_response.id,
+      
+      # Stripe Webhook Resources
+      aws_api_gateway_resource.stripe_webhook_resource.id,
+      aws_api_gateway_method.stripe_webhook_post.id,
+      aws_api_gateway_integration.stripe_webhook_lambda_integration.id,
+      
+      # Spend Credits Resources
+      aws_api_gateway_resource.spend_credits_resource.id,
+      aws_api_gateway_method.spend_credits_post.id,
+      aws_api_gateway_method.spend_credits_options.id,
+      aws_api_gateway_integration.spend_credits_lambda_integration.id,
+      aws_api_gateway_integration.spend_credits_options_integration.id,
+      aws_api_gateway_method_response.spend_credits_options_200.id,
+      aws_api_gateway_integration_response.spend_credits_options_integration_response.id,
     ]))
   }
 
@@ -504,8 +652,17 @@ output "session_chat_api_url" {
   description = "URL for invoking the session-chat endpoint"
 }
 
-# NEW: Output for the campaign-chat endpoint
 output "campaign_chat_api_url" {
   value       = "${aws_api_gateway_stage.api_stage.invoke_url}${aws_api_gateway_resource.campaign_chat_resource.path}"
   description = "URL for invoking the campaign-chat endpoint"
+}
+
+output "stripe_webhook_api_url" {
+  value       = "${aws_api_gateway_stage.api_stage.invoke_url}${aws_api_gateway_resource.stripe_webhook_resource.path}"
+  description = "URL for the Stripe Webhook. Register this URL in your Stripe dashboard."
+}
+
+output "spend_credits_api_url" {
+  value       = "${aws_api_gateway_stage.api_stage.invoke_url}${aws_api_gateway_resource.spend_credits_resource.path}"
+  description = "URL for invoking the spend-credits endpoint"
 }

@@ -22,6 +22,8 @@ LAMBDAS=(
   "session-chat"
   "campaign-chat"
   "create-campaign-index"
+  "stripeWebhook"
+  "spend-credits"
 )
 
 BUILD_DIR="build" # Temporary build directory within terraform/application/

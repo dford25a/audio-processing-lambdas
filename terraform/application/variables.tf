@@ -27,6 +27,17 @@ variable "appsync_api_key" {
   sensitive   = true # Mark as sensitive to avoid showing in CLI output
 }
 
+variable "stripe_secret_key" {
+  description = "stripe_secret_key"
+  type        = string
+  sensitive   = true
+}
+variable "stripe_webhook_secret" {
+  description = "stripe_webhook_secret"
+  type        = string
+  sensitive   = true
+}
+
 locals {
   # Environment-specific configuration
   env_config = {

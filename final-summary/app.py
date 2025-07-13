@@ -13,6 +13,7 @@ import boto3
 from pydantic import BaseModel, Field
 import openai # Added for openai.APIError
 from openai import OpenAI
+from thefuzz import process # For fuzzy string matching
 
 # --- CONFIGURATION ---
 OPENAI_API_KEY_FROM_ENV = os.environ.get('OPENAI_API_KEY')
@@ -40,90 +41,98 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY_FROM_ENV)
 # --- Pydantic Data Models ---
 class SegmentElement(BaseModel):
     title: str = Field(description="The title of this specific segment of the session.")
-    description: str = Field(description="A detailed textual description of what happened in this segment. (5-8 sentences)")
-    image_prompt: str = Field(description="A concise, visually descriptive prompt suitable for generating an image for this segment using DALL-E. This prompt should capture the essence of the segment visually.")
+    description: str = Field(description="A detailed textual description of what happened in this segment, following the user-defined length and style.")
+    image_prompt: str = Field(description="A concise, visually descriptive prompt suitable for generating an image for this segment using gpt-image-1. This prompt should capture the essence of the segment visually.")
+
+class HighlightElement(BaseModel):
+    name: str = Field(description="The name of the adventurer, location, or NPC.")
+    highlights: List[str] = Field(description="A list of key moments or actions related to this entity during the session.")
+    id: Optional[str] = Field(None, description="The ID of the entity, if it exists in the campaign.")
 
 class SummaryElements(BaseModel):
     tldr: str = Field(description="A concise 'too long; didn't read' summary of the entire session.")
-    sessionSegments: List[SegmentElement] = Field(description="A list of chronological segments detailing the session's events, each with a title, description (5-8 sentence segment summary), and an image prompt.")
+    sessionSegments: List[SegmentElement] = Field(description="A list of chronological segments detailing the session's events, each with a title, description, and an image prompt.")
+    adventurerHighlights: List[HighlightElement] = Field(description="Highlights for each adventurer involved in the session.")
+    locationHighlights: List[HighlightElement] = Field(description="Highlights for each location visited in the session.")
+    npcHighlights: List[HighlightElement] = Field(description="Highlights for each NPC that played a role in the session.")
 
 image_quality_lookup = {
-    "Low quality": "standard", # Changed to standard as 'low' is not a valid API value
-    "Standard quality": "standard",
-    "High quality": "hd"
+    "Low quality": "low", # Changed to standard as 'low' is not a valid API value
+    "Standard quality": "medium",
+    "High quality": "high"
 }
 
 image_format_lookup = {
-  "fantasy": {
-    "name": "Default",
-    "description": "Classic artistic style",
-    "longDescription": "A fantasy style painting with classic, imaginative elements. Often features magical creatures, dramatic lighting, and mythic scenery."
-  },
-  "dark-fantasy": {
-    "name": "Dark fantasy",
-    "description": "Dark fantasy style",
-    "longDescription": "A moody, detailed style with deep shadows, muted colors, and selective highlights for an ominous atmosphere."
-  },
-  "watercolor": {
-    "name": "Watercolor",
-    "description": "Watercolor style",
-    "longDescription": "A soft, dreamy style with loose brushstrokes, translucent colors, and organic edges."
-  },
-  "Sketchbook": {
-    "name": "Sketchbook",
-    "description": "Sketchbook style",
-    "longDescription": "A traditional pen-and-ink illustration style with muted, earthy tones and fine crosshatching, evoking the look of a classic fantasy storybook or vintage map."
-  },
-  "photo-releastic": { # Note: Typo in original key "photo-releastic" is kept for consistency
-    "name": "Photo realistic",
-    "description": "Photo realistic style",
-    "longDescription": "A lifelike, cinematic style with natural lighting, sharp detail, and dramatic depth of field."
-  },
-  "cyberpunk": {
-    "name": "Cyberpunk",
-    "description": "Cyberpunk style",
-    "longDescription": "A neon-lit, high-contrast style with dark textures, glowing highlights, and a gritty futuristic vibe."
-  },
-  "retro-vibrant": {
-    "name": "Retro illustration",
-    "description": "Retro illustration style",
-    "longDescription": "A bold, 1980s fantasy style with vivid colors, heroic poses, and painterly textures."
-  },
-  "graphic-novel": {
-    "name": "Graphic Novel",
-    "description": "Graphic novel style",
-    "longDescription": "A clean, inked comic style with vibrant colors, balanced outlines, and cinematic composition."
-  },
-  "ink-sketch": {
-    "name": "B&W ink sketch",
-    "description": "B&W ink sketch style",
-    "longDescription": "A rough, black-and-white ink style with scratchy lines, heavy cross-hatching, and surreal fantasy elements."
-  },
-  "retro": {
-    "name": "Retro video game",
-    "description": "Retro video game style",
-    "longDescription": "A pixelated, 8-bit style with chunky forms, limited palettes, and nostalgic charm."
-  },
-  "3d-animation": {
-    "name": "3D Animation",
-    "description": "3D animation style",
-    "longDescription": "A polished 3D style with stylized characters, expressive faces, and cinematic lighting."
-  },
-  "anime": {
-    "name": "Anime",
-    "description": "Anime style",
-    "longDescription": "A vibrant, cel-shaded style with dynamic poses, clean lines, and painterly backgrounds."
-  },
-  "studio-ghibli": {
-    "name": "Studio Ghibli",
-    "description": "Studio Ghibli style",
-    "longDescription": "A Studio Ghibli film scene"
-  },
-  "painting": {
-    "name": "Painterly",
-    "description": "Painting style",
-    "longDescription": "A painterly, realistic style with warm lighting, rich detail, and heroic figures in vast, mythic landscapes."
-  }
+    "fantasy": {
+        "name": "Default",
+        "description": "Classic artistic style",
+        "longDescription": "A fantasy style painting with classic, imaginative elements. Often features magical creatures, dramatic lighting, and mythic scenery."
+    },
+    "dark-fantasy": {
+        "name": "Dark fantasy",
+        "description": "Dark fantasy style",
+        "longDescription": "A moody, detailed style with deep shadows, muted colors, and selective highlights for an ominous atmosphere."
+    },
+    "watercolor": {
+        "name": "Watercolor",
+        "description": "Watercolor style",
+        "longDescription": "A soft, dreamy style with loose brushstrokes, translucent colors, and organic edges."
+    },
+    "Sketchbook": {
+        "name": "Sketchbook",
+        "description": "Sketchbook style",
+        "longDescription": "A traditional pen-and-ink illustration style with muted, earthy tones and fine crosshatching, evoking the look of a classic fantasy storybook or vintage map."
+    },
+    "photo-releastic": { # Note: Typo in original key "photo-releastic" is kept for consistency
+        "name": "Photo realistic",
+        "description": "Photo realistic style",
+        "longDescription": "A lifelike, cinematic style with natural lighting, sharp detail, and dramatic depth of field."
+    },
+    "cyberpunk": {
+        "name": "Cyberpunk",
+        "description": "Cyberpunk style",
+        "longDescription": "A neon-lit, high-contrast style with dark textures, glowing highlights, and a gritty futuristic vibe."
+    },
+    "retro-vibrant": {
+        "name": "Retro illustration",
+        "description": "Retro illustration style",
+        "longDescription": "A bold, 1980s fantasy style with vivid colors, heroic poses, and painterly textures."
+    },
+    "graphic-novel": {
+        "name": "Graphic Novel",
+        "description": "Graphic novel style",
+        "longDescription": "A clean, inked comic style with vibrant colors, balanced outlines, and cinematic composition."
+    },
+    "ink-sketch": {
+        "name": "B&W ink sketch",
+        "description": "B&W ink sketch style",
+        "longDescription": "A rough, black-and-white ink style with scratchy lines, heavy cross-hatching, and surreal fantasy elements."
+    },
+    "retro": {
+        "name": "Retro video game",
+        "description": "Retro video game style",
+        "longDescription": "A pixelated, 8-bit style with chunky forms, limited palettes, and nostalgic charm."
+    },
+    "3d-animation": {
+        "name": "3D Animation",
+        "description": "3D animation style",
+        "longDescription": "A polished 3D style with stylized characters, expressive faces, and cinematic lighting."
+    },
+    "anime": {
+        "name": "Anime",
+        "description": "Anime style",
+        "longDescription": "A vibrant, cel-shaded style with dynamic poses, clean lines, and painterly backgrounds."
+    },
+    "studio-ghibli": {
+        "name": "Studio Ghibli",
+        "description": "Studio Ghibli style",
+        "longDescription": "A Studio Ghibli film scene"
+    },
+    "painting": {
+        "name": "Painterly",
+        "description": "Painting style",
+        "longDescription": "A painterly, realistic style with warm lighting, rich detail, and heroic figures in vast, mythic landscapes."
+    }
 }
 
 selected_tones_lookup = ["Lighthearted", "Serious", "Epic", "Whimsical", "Humorous", "Dark"]
@@ -137,33 +146,97 @@ Example:
   "sessionSegments": [
     {
       "title": "Descent into the Sunken City",
-      "description": "The adventurers—Bron, Donnie, Joe Bangles, and Shifty—carefully explored a mysterious underground tomb marked by a large arched crystal window and a steep drop-off guarded by roped fences. On their way to a side door, they discovered a deep chasm with descending stairs leading to lower platforms, adding complexity to their path. They noted six desiccated corpses wearing black paper mache and feather masks seated on thrones, flanked by two imposing bear statues gripping a bronze disc embossed with a dozen glaring eyes. The group speculated on the significance of the masks and the ominous inscription urging to 'don the mask or be seen.' ",
+      "description": "The adventurers—Bron, Donnie, Joe Bangles, and Shifty—carefully explored a mysterious underground tomb marked by a large arched crystal window and a steep drop-off guarded by roped fences. On their way to a side door, they discovered a deep chasm with descending stairs leading to lower platforms, adding complexity to their path. They noted six desiccated corpses wearing black paper mache and feather masks seated on thrones, flanked by two imposing bear statues gripping a bronze disc embossed with a dozen glaring eyes. The group speculated on the significance of the masks and the ominous inscription urging to 'don the mask or be seen.'",
       "image_prompt": "A fantasy adventuring party (rogue, paladin, wizard) cautiously entering a dark, vine-covered stone archway leading into a mysterious underwater city. Eerie blue light emanates from within. Ancient, crumbling architecture visible in the background, submerged in murky water."
     },
     {
       "title": "The Cultist's Sanctum",
-      "description": "Initially, Bron attempted to smash the crystal window to gain entry but failed to break through. The party persuaded him to stop and instead investigate a side door they discovered nearby. Approaching cautiously through this alternate entrance, they avoided alerting the tomb’s guardians prematurely. Once inside, Bron swiftly grabbed one of the masks from a corpse just as the undead began to animate, triggering a fierce combat encounter. The party quickly rolled initiative, with Bron raging and attempting to rip the mask off one of the undead, succeeding with a powerful strength check. Shifty conjured a spectral pack of wolves using his fifth-level spell, which inflicted damage and hindered enemy movement. The undead retaliated with life drain attacks, forcing the party to make multiple constitution saving throws to maintain concentration on spells and resist debilitating effects.",
+      "description": "Initially, Bron attempted to smash the crystal window to gain entry but failed to break through. The party persuaded him to stop and instead investigate a side door they discovered nearby. Approaching cautiously through this alternate entrance, they avoided alerting the tomb’s guardians prematurely. Once inside, Bron swiftly grabbed one of the masks from a corpse just as the undead began to animate, triggering a fierce combat encounter. The party quickly rolled initiative, with Bron raging and attempting to rip the mask off one of the undead, succeeding with a powerful strength check. Shifty conjured a spectral pack of wolves using his fifth-level spell, which inflicted damage and hindered enemy movement. The undead retaliated with life drain attacks, forcing the party to make multiple constitution saving throws to maintain concentration on spells and resist debilitating effects...",
       "image_prompt": "Epic battle scene inside a grand, dimly lit, partially submerged temple. A paladin clashes with a dark sorcerer wielding crackling energy. A rogue attacks from the shadows. A wizard casts a powerful counterspell, deflecting a massive magical wave. Tentacle motifs adorn the temple walls."
     },
     {
       "title": "The Tidejewel and Narrow Escape",
-      "description": "The battle was intense and tactical, with enemies casting dispel magic to counter the party’s plant growth spell that had slowed their movement by overgrowing the area with thick vines. Joe Bangles and Donnie coordinated attacks, utilizing Hunter’s Mark and ranged strikes to chip away at the undead, while Shifty cast Moonbeam and Starry Whisp to deal radiant damage. Bron’s relentless axe swings and frenzy attacks cleaved through multiple foes, turning the tide of battle. Despite suffering paralysis and necrotic damage that reduced their maximum hit points, the party persevered, employing spells like Hold Person and Thunderwave to control the battlefield.",
+      "description": "The battle was intense and tactical, with enemies casting dispel magic to counter the party’s plant growth spell that had slowed their movement by overgrowing the area with thick vines. Joe Bangles and Donnie coordinated attacks, utilizing Hunter’s Mark and ranged strikes to chip away at the undead, while Shifty cast Moonbeam and Starry Whisp to deal radiant damage. Bron’s relentless axe swings and frenzy attacks cleaved through multiple foes, turning the tide of battle. Despite suffering paralysis and necrotic damage that reduced their maximum hit points, the party persevered, employing spells like Hold Person and Thunderwave to control the battlefield...",
       "image_prompt": "Adventurers frantically escaping a crumbling underwater temple. One clutches a glowing blue jewel. Water surges around them, debris falls. The exit is a distant point of light. Sense of urgency and danger."
     }
+  ],
+  "adventurerHighlights": [
+      {
+          "name": "Bron",
+          "id": "adv-123",
+          "highlights": [
+              "Attempted to smash a crystal window to gain entry.",
+              "Successfully ripped a mask off an undead foe with a strength check.",
+              "Dealt significant damage with relentless axe swings and frenzy attacks."
+          ]
+      }
+  ],
+  "locationHighlights": [
+      {
+          "name": "The Sunken City",
+          "id": "loc-456",
+          "highlights": [
+              "Explored a mysterious underground tomb within the city.",
+              "Navigated a deep chasm with descending stairs.",
+              "Escaped a collapsing temple at the session's climax."
+          ]
+      }
+  ],
+  "npcHighlights": [
+      {
+          "name": "Cultist Leader",
+          "id": "npc-789",
+          "highlights": [
+              "Animated desiccated corpses to attack the party.",
+              "Used life drain attacks, reducing the party's maximum HP.",
+              "Was ultimately defeated in a tactical battle."
+          ]
+      }
   ]
 }
 """
 
-GET_SESSION_QUERY = """
-query GetSession($id: ID!) {
-  getSession(id: $id) {
+# --- GraphQL Queries and Mutations ---
+GET_SESSION_QUERY = "query GetSession($id: ID!) { getSession(id: $id) { id _version audioFile owner campaign { id } } }"
+
+GET_NPC_DETAILS_QUERY = """
+query GetNPC($id: ID!) {
+  getNPC(id: $id) {
+    id
+    name
+    description
+    _version
+  }
+}
+"""
+
+GET_LOCATION_DETAILS_QUERY = """
+query GetLocation($id: ID!) {
+  getLocation(id: $id) {
+    id
+    name
+    description
+    _version
+  }
+}
+"""
+
+UPDATE_NPC_MUTATION = """
+mutation UpdateNPC($input: UpdateNPCInput!) {
+  updateNPC(input: $input) {
     id
     _version
-    audioFile
-    owner
-    campaign {
-      id
-    }
+    description
+  }
+}
+"""
+
+UPDATE_LOCATION_MUTATION = """
+mutation UpdateLocation($input: UpdateLocationInput!) {
+  updateLocation(input: $input) {
+    id
+    _version
+    description
   }
 }
 """
@@ -175,13 +248,39 @@ query CampaignNpcsByCampaignId($campaignId: ID!, $limit: Int, $nextToken: String
       nPC {
         id
         name
-        brief
       }
     }
     nextToken
   }
 }
 """
+GET_ADVENTURERS_BY_CAMPAIGN_QUERY = """
+query CampaignAdventurersByCampaignId($campaignId: ID!, $limit: Int, $nextToken: String) {
+  campaignAdventurersByCampaignId(campaignId: $campaignId, limit: $limit, nextToken: $nextToken) {
+    items {
+      adventurer {
+        id
+        name
+      }
+    }
+    nextToken
+  }
+}
+"""
+GET_LOCATIONS_BY_CAMPAIGN_QUERY = """
+query CampaignLocationsByCampaignId($campaignId: ID!, $limit: Int, $nextToken: String) {
+    campaignLocationsByCampaignId(campaignId: $campaignId, limit: $limit, nextToken: $nextToken) {
+        items {
+            location {
+                id
+                name
+            }
+        }
+        nextToken
+    }
+}
+"""
+
 
 UPDATE_SESSION_MUTATION = """
 mutation UpdateSession($input: UpdateSessionInput!, $condition: ModelSessionConditionInput) {
@@ -206,6 +305,9 @@ mutation CreateSegment($input: CreateSegmentInput!) {
     image
     index # Added index to response
     sessionSegmentsId
+    adventurerSegmentsId
+    locationSegmentsId
+    nPCSegmentsId
     owner
     createdAt
     updatedAt
@@ -246,6 +348,181 @@ def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = No
         print(f"Unexpected error in execute_graphql_request: {e}")
         traceback.print_exc()
         return {"errors": [{"message": f"Unexpected error in execute_graphql_request: {e}"}]}
+        
+def update_entity_description(
+    entity_id: str,
+    entity_type: str, # "NPC" or "Location"
+    highlights: List[str],
+    debug: bool = False
+) -> bool:
+    """
+    Fetches an entity's description, updates it with new highlights using an LLM,
+    and saves it back to the database.
+    """
+    if not entity_id or not highlights:
+        if debug: print(f"Skipping description update for {entity_type}: missing ID or highlights.")
+        return False
+
+    print(f"--- Starting description update for {entity_type} ID: {entity_id} ---")
+
+    # 1. Determine which GraphQL queries and keys to use
+    if entity_type == "NPC":
+        get_query = GET_NPC_DETAILS_QUERY
+        update_mutation = UPDATE_NPC_MUTATION
+        get_key = "getNPC"
+        update_key = "updateNPC"
+    elif entity_type == "Location":
+        get_query = GET_LOCATION_DETAILS_QUERY
+        update_mutation = UPDATE_LOCATION_MUTATION
+        get_key = "getLocation"
+        update_key = "updateLocation"
+    else:
+        print(f"Error: Invalid entity_type '{entity_type}' for description update.")
+        return False
+
+    # 2. Fetch the entity's current state
+    try:
+        response_gql = execute_graphql_request(get_query, {"id": entity_id})
+        entity_data = response_gql.get("data", {}).get(get_key)
+        if not entity_data:
+            print(f"Warning: Could not fetch {entity_type} with ID {entity_id}. Error: {response_gql.get('errors')}")
+            return False
+        
+        current_description = entity_data.get("description", "") or "This entity has no description yet."
+        current_version = entity_data["_version"]
+        entity_name = entity_data.get("name", "Unknown")
+
+    except Exception as e:
+        print(f"Exception while fetching {entity_type} {entity_id}: {e}")
+        return False
+
+    # 3. Construct the prompt for the LLM
+    highlights_str = "\n".join(f"- {h}" for h in highlights)
+    prompt = f"""You are a narrative assistant for a TTRPG. Your task is to update an entity's description based on recent events from a game session.
+
+Instructions:
+- Read the existing description and the new highlights.
+- Weave the information from the new highlights into the description naturally.
+- Do NOT simply list the new events. Integrate them to enrich the existing narrative.
+- Preserve the original tone and style of the description.
+- If the description was empty, create a new one based on the highlights. Aim for around 3-6 sentences of quality information.
+- The final output should be only the new, complete description text, without any preamble.
+
+Existing Description for {entity_name}:
+"{current_description}"
+
+New Highlights from the latest session:
+{highlights_str}
+
+Updated Description:
+"""
+
+    # 4. Call OpenAI to get the updated description
+    try:
+        if debug: print(f"Generating updated description for {entity_name}...")
+        messages = [{"role": "user", "content": prompt}]
+        completion = openai_client.chat.completions.create(
+            model="gpt-4.1-2025-04-14",
+            messages=messages,
+            temperature=0.4, # Allow for some creativity in merging text
+        )
+        updated_description = completion.choices[0].message.content.strip()
+
+        if not updated_description or updated_description == current_description:
+            if debug: print("LLM did not produce a new description. Skipping update.")
+            return True # Not an error, just no change needed
+
+        if debug: print(f"New Description:\n{updated_description}")
+
+    except Exception as e:
+        print(f"Error calling OpenAI for description update on {entity_name}: {e}")
+        return False
+
+    # 5. Execute the update mutation
+    try:
+        update_input = {
+            "id": entity_id,
+            "description": updated_description,
+            "_version": current_version
+        }
+        update_response = execute_graphql_request(update_mutation, {"input": update_input})
+        if update_response.get("data", {}).get(update_key):
+            print(f"✅ Successfully updated description for {entity_type}: {entity_name} (ID: {entity_id})")
+            return True
+        else:
+            print(f"❌ Failed to update description for {entity_type} {entity_name}. Error: {update_response.get('errors')}")
+            return False
+    except Exception as e:
+        print(f"Exception during {entity_type} update mutation for {entity_name}: {e}")
+        return False
+
+
+# --- Replace the old helper function with this enhanced version ---
+
+def map_ids_to_highlights(
+    highlights: List[HighlightElement],
+    authoritative_entities: List[Dict],
+    entity_key_for_db_data: str,
+    score_cutoff: int = 85,
+    debug: bool = False
+):
+    """
+    Correctly maps entity IDs to highlight elements using an authoritative list of entities,
+    falling back to fuzzy string matching. This function intentionally OVERWRITES any existing ID
+    on the highlight object to ensure correctness against the provided sources of truth.
+
+    Args:
+        highlights: The list of HighlightElement objects from the LLM.
+        authoritative_entities: A combined list of entities from both the database (campaign-wide)
+                                and the session metadata.
+        entity_key_for_db_data: The key used in the database query results to access the
+                                nested entity data (e.g., 'adventurer', 'nPC', 'location').
+        score_cutoff: The minimum score for a fuzzy match to be considered valid.
+        debug: Flag for verbose logging.
+    """
+    # Step 1: Build the authoritative name-to-ID map from all trusted sources.
+    # This map uses lowercase names for robust, case-insensitive matching.
+    name_to_id_map = {}
+    for entity in authoritative_entities:
+        # Handles both structures: nested from DB query and flat from metadata
+        name = (entity.get('name') or entity.get(entity_key_for_db_data, {}).get('name', '')).lower()
+        entity_id = entity.get('id') or entity.get(entity_key_for_db_data, {}).get('id')
+        if name and entity_id:
+            name_to_id_map[name] = entity_id
+
+    if not name_to_id_map:
+        if debug: print(f"Warning: The authoritative name map for '{entity_key_for_db_data}' is empty. Cannot map IDs.")
+        return
+
+    canonical_names = list(name_to_id_map.keys())
+    if debug: print(f"Starting ID mapping for '{entity_key_for_db_data}'. Authoritative names: {canonical_names}")
+
+    # Step 2: Iterate through highlights and assign the correct ID.
+    for highlight in highlights:
+        original_llm_id = highlight.id  # Keep for logging
+        # CRITICAL: Reset the ID to null. We will only use an ID from our trusted map.
+        highlight.id = None
+
+        highlight_name_lower = highlight.name.lower()
+
+        # Priority 1: Attempt a direct, case-insensitive match.
+        if highlight_name_lower in name_to_id_map:
+            highlight.id = name_to_id_map[highlight_name_lower]
+            print(f"✅ SUCCESS (Direct): Mapped '{highlight.name}' to ID '{highlight.id}'. (LLM originally suggested: {original_llm_id})")
+            continue  # Successfully mapped, move to the next highlight
+
+        # Priority 2: If no direct match, fall back to fuzzy matching.
+        match = process.extractOne(highlight.name, canonical_names)
+        if match:
+            best_match_name, score = match
+            if score >= score_cutoff:
+                matched_id = name_to_id_map.get(best_match_name)
+                highlight.id = matched_id
+                print(f"✅ SUCCESS (Fuzzy): Mapped '{highlight.name}' to '{best_match_name}' (ID: {matched_id}) with score {score}. (LLM ID was: {original_llm_id})")
+            else:
+                print(f"❌ FAILED: Fuzzy match for '{highlight.name}' to '{best_match_name}' was below threshold (Score: {score} < {score_cutoff}). No ID assigned.")
+        else:
+            if debug: print(f"Warning: `process.extractOne` returned no match for '{highlight.name}'.")
 
 
 # --- Image Generation and Upload Helper ---
@@ -276,11 +553,11 @@ def generate_and_upload_image(
             print(f"Generating image... \n  Quality: '{image_quality}'\n  Prompt: '{full_prompt}'")
 
         response = openai_client.images.generate(
-            model="gpt-image-1", # User requested not to change model IDs
+            model="gpt-image-1",
             prompt=full_prompt,
             n=1,
-            size="1536x1024", # User requested not to change parameters
-            quality="low" # User requested not to change parameters
+            size="1536x1024",
+            quality="low"#image_quality
         )
 
         if response.data and response.data[0].b64_json:
@@ -334,6 +611,34 @@ def parse_session_id_from_stem(filename_stem: str) -> Optional[str]:
     if match:
         return match.group(1)
     return None
+
+def fetch_campaign_data(campaign_id, query, data_key, item_key, debug=False):
+    if not campaign_id:
+        if debug: print(f"Skipping fetch for {data_key} as Campaign ID is missing.")
+        return [], f"No {item_key} context available from campaign."
+    print(f"Fetching {data_key} for Campaign ID: {campaign_id}")
+    all_items, next_token, pages_queried, max_pages = [], None, 0, 25
+    while pages_queried < max_pages:
+        pages_queried += 1
+        query_vars = {"campaignId": campaign_id, "limit": 50, "nextToken": next_token}
+        response_gql = execute_graphql_request(query, query_vars)
+        if "errors" in response_gql and not response_gql.get("data"):
+            print(f"Warning: GraphQL error during Get{data_key}: {response_gql['errors']}. Proceeding with partial context."); break
+        data = response_gql.get("data", {}).get(f"campaign{data_key}ByCampaignId", {})
+        all_items.extend(data.get("items", []))
+        next_token = data.get("nextToken")
+        if not next_token: break
+    
+    details = []
+    for item in all_items:
+        if item.get(item_key):
+            name = item.get(item_key, {}).get('name', f'Unknown {item_key}')
+            item_id = item.get(item_key, {}).get('id')
+            details.append(f"- {name} (ID: {item_id})")
+
+    context_string = f"Relevant {data_key} in this campaign:\n" + "\n".join(details) if details else f"No {data_key} found for this campaign."
+    if debug: print(f"{data_key} Context String (Campaign):\n{context_string}")
+    return all_items, context_string
 
 # --- Lambda Handler ---
 def lambda_handler(event, context):
@@ -402,16 +707,16 @@ def lambda_handler(event, context):
             print(f"Successfully fetched session via GetSession: {json.dumps(session_info)}")
         
         session_id = session_info["id"]
+        # Use session's title for highlights, with a fallback name if title is missing
+        session_title = session_info.get("name") or "Unnamed Session"
         initial_session_version = session_info["_version"]
 
         # --- Fetch Session Metadata ---
-        ### UPDATED ###
-        # This section is updated to remove parsing for adventurers, locations, and npcs.
         session_metadata_content = {}
         metadata_instructions_str = "Not provided."
         
         # Generation instruction defaults
-        gen_content_length_str = "Use a standard, moderate length for descriptions."
+        gen_content_length_str = "Segment length should be 4-5 sentences."
         gen_content_style_str = "Write in a balanced, narrative style."
         gen_tones_str = "Use a neutral, standard TTRPG tone."
         gen_emphases_str = "Give balanced attention to all aspects of the session."
@@ -420,7 +725,7 @@ def lambda_handler(event, context):
 
         # Image instruction defaults
         img_enabled = True # Default to True if metadata is missing
-        img_quality = 'standard' 
+        img_quality = 'medium' 
         img_style_prompt = image_format_lookup["fantasy"]["longDescription"] 
 
         metadata_filename = f"{filename_stem_for_search}.metadata.json"
@@ -439,15 +744,15 @@ def lambda_handler(event, context):
             if gen_instructions:
                 length_val = gen_instructions.get("contentLength", 0.5)
                 if length_val < 0.33:
-                    gen_content_length_str = "Be very concise and brief in all descriptions."
+                    gen_content_length_str = "Each segment length should be short and concise, around 2-4 sentences."
                 elif length_val > 0.66:
-                    gen_content_length_str = "Be highly detailed and expansive in all descriptions."
+                    gen_content_length_str = "Each segment length should be highly detailed and verbose, around 6-8 sentences."
                 
                 style_val = gen_instructions.get("contentStyle", 0.5)
                 if style_val < 0.33:
-                    gen_content_style_str = "Write in a direct, to-the-point style."
+                    gen_content_style_str = "Write in a direct, factual, to-the-point style."
                 elif style_val > 0.66:
-                    gen_content_style_str = "Write in a highly narrative, descriptive, and stylized manner."
+                    gen_content_style_str = "Write in a highly narrative, descriptive, and dramatic manner."
 
                 tones = gen_instructions.get("selectedTones")
                 if tones and isinstance(tones, list):
@@ -468,10 +773,10 @@ def lambda_handler(event, context):
                 img_enabled = image_instructions.get("imageGenerationEnabled", True)
                 
                 quality_key = image_instructions.get("imageQuality", "Standard quality")
-                img_quality = image_quality_lookup.get(quality_key, "standard")
+                img_quality = image_quality_lookup.get(quality_key, "medium")
 
                 style_key = image_instructions.get("selectedStyle", "fantasy")
-                img_style_prompt = image_format_lookup.get(style_key, {}).get("description", img_style_prompt) + ' ' + image_format_lookup.get(style_key, {}).get("longDescription", img_style_prompt)
+                img_style_prompt = image_format_lookup.get(style_key, {}).get("longDescription", img_style_prompt)
 
             # --- Parse Other Instructions ---
             metadata_instructions_str = session_metadata_content.get("instructions", "Not provided.")
@@ -505,37 +810,20 @@ def lambda_handler(event, context):
             print(f"Using Session ID: {session_id} (initial_v: {initial_session_version}), Effective Segment Owner: {segment_owner_value_for_appsync}")
 
         campaign_id = session_info.get("campaign", {}).get("id")
-        if not campaign_id: print(f"Warning: Session {session_id} lacks campaign ID. NPC context will be limited.")
-
-        npc_context_string_campaign = "No specific NPC context available from campaign."
-        if campaign_id:
-            print(f"Fetching NPCs for Campaign ID: {campaign_id}")
-            all_npc_items, npc_current_next_token, npc_pages_queried, MAX_PAGES_NPC = [], None, 0, 25
-            while npc_pages_queried < MAX_PAGES_NPC:
-                npc_pages_queried +=1
-                npc_query_vars = {"campaignId": campaign_id, "limit": 50, "nextToken": npc_current_next_token}
-                npc_response_gql = execute_graphql_request(GET_NPCS_BY_CAMPAIGN_QUERY, npc_query_vars)
-                if "errors" in npc_response_gql and not npc_response_gql.get("data"):
-                    print(f"Warning: GraphQL error during GetNpcs: {npc_response_gql['errors']}. Proceeding without full NPC context."); break
-                npc_data = npc_response_gql.get("data", {}).get("campaignNpcsByCampaignId", {})
-                all_npc_items.extend(npc_data.get("items", []))
-                npc_current_next_token = npc_data.get("nextToken")
-                if not npc_current_next_token: break
-            npc_details = [f"- {item.get('nPC', {}).get('name', 'Unknown NPC')}: {item.get('nPC', {}).get('brief', 'No brief.')}" for item in all_npc_items if item.get("nPC")]
-            npc_context_string_campaign = "Relevant NPCs in this campaign:\n" + "\n".join(npc_details) if npc_details else "No NPCs found for this campaign."
-            if debug: print(f"NPC Context String (Campaign):\n{npc_context_string_campaign}")
-        else:
-            if debug: print("Skipping NPC fetch as Campaign ID is missing.")
+        
+        # --- Fetch Campaign Context ---
+        campaign_id = session_info.get("campaign", {}).get("id")
+        all_npcs, npc_context_string_campaign = fetch_campaign_data(campaign_id, GET_NPCS_BY_CAMPAIGN_QUERY, 'Npcs', 'nPC', debug)
+        all_adventurers, adventurer_context_string_campaign = fetch_campaign_data(campaign_id, GET_ADVENTURERS_BY_CAMPAIGN_QUERY, 'Adventurers', 'adventurer', debug)
+        all_locations, location_context_string_campaign = fetch_campaign_data(campaign_id, GET_LOCATIONS_BY_CAMPAIGN_QUERY, 'Locations', 'location', debug)
 
         s3_object_data = s3_client.get_object(Bucket=s3_transcript_bucket, Key=key)
         text_to_summarize = s3_object_data['Body'].read().decode('utf-8')
         if not text_to_summarize.strip():
             raise ValueError(f"Transcript file {key} is empty or contains only whitespace.")
 
-        ### UPDATED ###
-        # The main prompt is updated to remove references to adventurers, locations, and npcs from metadata.
         prompt = f"""You are Scribe, an AI-powered assistant that summarizes table top role playing game (TTRPG) sessions.
-Your task is to process a TTRPG session transcript and generate a JSON object containing a TLDR and a list of chronological session segments.
+Your task is to process a TTRPG session transcript and generate a JSON object containing a TLDR, chronological session segments, and highlights for adventurers, locations, and NPCs.
 
 Follow these instructions precisely, which are derived from user settings:
 <generation_instructions>
@@ -547,10 +835,18 @@ Follow these instructions precisely, which are derived from user settings:
 - Game Mechanics: {gen_mechanics_str}
 </generation_instructions>
 
-The output must be a JSON object matching the Pydantic model `SummaryElements` which includes `tldr` (a string) and `sessionSegments` (a list of objects). Each segment object must have:
-  a. 'title': A clear title for the segment.
-  b. 'description': A narrative of events, actions, and key moments, following the instructions above.
-  c. 'image_prompt': A concise, visually descriptive prompt (max 2-3 sentences) suitable for generating an image for this segment using a model like DALL-E. This prompt should capture the visual essence of the segment (key characters, setting, action, mood). DO NOT include stylistic instructions like 'a painting of' or 'in the style of'; just describe the scene. The system will add the artistic style automatically.
+The output must be a JSON object matching the Pydantic model `SummaryElements`. This includes:
+- `tldr`: A string summary of the whole session.
+- `sessionSegments`: A list of 3-5 chronological segment objects. Each must have:
+  - 'title': A clear title.
+  - 'description': A narrative of events.
+  - 'image_prompt': A concise, visual description for gpt-image-1 image generation (describe the scene, not the style).
+- `adventurerHighlights`, `locationHighlights`, `npcHighlights`: Lists of highlight objects. Each must have:
+    - 'name': The entity's name.
+    - 'id': The entity's ID from the context below, if available.
+    - 'highlights': A list of key moments for that entity.
+
+- For `adventurerHighlights`, `locationHighlights`, and `npcHighlights`, you MUST find the matching entity in the context and include its ID. If the entity is not in the context, set the ID to null.
 
 Use the following context to inform your summary:
 Session Transcript:
@@ -558,31 +854,32 @@ Session Transcript:
 {text_to_summarize}
 </session_text>
 
-User-Provided General Instructions (if any from metadata):
+User Instructions:
 <user_instructions>
 {metadata_instructions_str}
 </user_instructions>
 
-NPC Context from Campaign (use for names and roles, if available):
+Context from Campaign (use for names, IDs, and roles):
 <npc_context_campaign>
 {npc_context_string_campaign}
 </npc_context_campaign>
+<adventurer_context_campaign>
+{adventurer_context_string_campaign}
+</adventurer_context_campaign>
+<location_context_campaign>
+{location_context_string_campaign}
+</location_context_campaign>
+
 
 Example Output Structure (follow this JSON format precisely):
 <example_summary>
 {example_summary_for_segments_with_images}
 </example_summary>
-
-Guidelines for Segments:
-- Chronological order.
-- Divide the session into 2-5 meaningful segments.
-- Distinct parts of the session (e.g., exploration, social interaction, combat, major plot points).
-- Use character/NPC names as mentioned in the transcript or any provided context.
 """
         if debug:
             print(f"Full prompt for OpenAI:\n{prompt[:1000]}...\n...\n...{prompt[-500:]}")
 
-        def get_openai_summary_segments_with_image_prompts(prompt_text: str, model: str = "gpt-4-turbo") -> Optional[SummaryElements]:
+        def get_openai_summary_segments_with_image_prompts(prompt_text: str, model: str = "gpt-4.1-2025-04-14") -> Optional[SummaryElements]:
             messages = [{"role": "user", "content": prompt_text}]
             try:
                 completion = openai_client.chat.completions.create(
@@ -593,22 +890,28 @@ Guidelines for Segments:
                 )
                 if completion.choices and completion.choices[0].message and completion.choices[0].message.content:
                     json_content = completion.choices[0].message.content
-                    if debug: print(f"Raw OpenAI JSON (summary/segments/prompts):\n{json_content}")
+                    if debug: print(f"Raw OpenAI JSON:\n{json_content}")
                     return SummaryElements.model_validate_json(json_content)
-                else: print("OpenAI response for summary/segments lacked content or choices."); return None
-            except openai.APIError as e: print(f"OpenAI API error during summary/segment generation: {e}"); return None
-            except Exception as e: print(f"Error calling OpenAI for summary/segments or parsing/validating response: {e}"); traceback.print_exc(); return None
+                else: print("OpenAI response lacked content or choices."); return None
+            except openai.APIError as e: print(f"OpenAI API error during summary generation: {e}"); return None
+            except Exception as e: print(f"Error calling OpenAI for summary or parsing response: {e}"); traceback.print_exc(); return None
 
         summary_elements_response = get_openai_summary_segments_with_image_prompts(prompt)
-
         if not summary_elements_response or not isinstance(summary_elements_response, SummaryElements):
-            err_msg = "Failed to get valid SummaryElements (with image prompts) from OpenAI or response was not in the expected format."
+            err_msg = "Failed to get valid SummaryElements from OpenAI or response was not in the expected format."
             print(f"Error: {err_msg}"); raise Exception(err_msg)
-        if not summary_elements_response.sessionSegments:
-            print("Warning: OpenAI returned SummaryElements, but the sessionSegments list is empty. This might be due to a very short transcript or an issue with segment generation.")
 
         if debug: print(f"### LLM OUTPUT (Pydantic Model) ###\n{summary_elements_response.model_dump_json(indent=2)}")
+        
+        # --- Post-Processing: Map IDs using Fuzzy Matching ---
+        print("--- Starting ID Mapping Process ---")
+        map_ids_to_highlights(summary_elements_response.adventurerHighlights, all_adventurers, 'adventurer', debug=debug)
+        map_ids_to_highlights(summary_elements_response.npcHighlights, all_npcs, 'nPC', debug=debug)
+        map_ids_to_highlights(summary_elements_response.locationHighlights, all_locations, 'location', debug=debug)
+        print("--- Finished ID Mapping Process ---")
+        if debug: print(f"### LLM OUTPUT (After ID Mapping) ###\n{summary_elements_response.model_dump_json(indent=2)}")
 
+        
         s3_summary_output_key = f"{s3_transcript_output_prefix.rstrip('/')}/{filename_stem_for_search}.json"
         s3_client.put_object(
             Bucket=s3_transcript_bucket,
@@ -616,109 +919,130 @@ Guidelines for Segments:
             Body=summary_elements_response.model_dump_json(indent=2),
             ContentType='application/json'
         )
-        print(f"Summary (TLDR, Segments, Image Prompts) saved to S3: s3://{s3_transcript_bucket}/{s3_summary_output_key}")
+        print(f"Summary saved to S3: s3://{s3_transcript_bucket}/{s3_summary_output_key}")
         
-        # --- Segment Processing and Image Generation ---
-        print(f"Processing {len(summary_elements_response.sessionSegments)} segments for image generation and AppSync creation...")
-        created_segment_appsync_details = []
-        segment_processing_errors = []
+        # --- Segment Processing ---
+        processing_errors = []
+        created_segments_count = 0
+        
+        # Process Session Segments
+        print(f"Processing {len(summary_elements_response.sessionSegments)} session segments...")
         first_segment_image_s3_key = None 
-
-        if not img_enabled:
-            print("Image generation is disabled in metadata. Skipping all image generation.")
-        
         for idx, segment in enumerate(summary_elements_response.sessionSegments):
             segment_image_s3_key_or_none = None
             try:
-                print(f"Processing segment {idx + 1}/{len(summary_elements_response.sessionSegments)}: '{segment.title}'")
-
+                print(f"Processing session segment {idx + 1}/{len(summary_elements_response.sessionSegments)}: '{segment.title}'")
                 if img_enabled and segment.image_prompt:
                     segment_image_s3_key_or_none = generate_and_upload_image(
-                        prompt_suffix=segment.image_prompt,
-                        s3_bucket=s3_image_upload_bucket,
-                        s3_base_prefix=s3_segment_image_prefix,
-                        session_id=session_id,
-                        segment_index=idx,
-                        image_style_prompt=img_style_prompt,
-                        image_quality=img_quality,
-                        debug=debug
+                        prompt_suffix=segment.image_prompt, s3_bucket=s3_image_upload_bucket,
+                        s3_base_prefix=s3_segment_image_prefix, session_id=session_id, segment_index=idx,
+                        image_style_prompt=img_style_prompt, image_quality=img_quality, debug=debug
                     )
                     if idx == 0 and segment_image_s3_key_or_none:
                         first_segment_image_s3_key = segment_image_s3_key_or_none
-                        if debug: print(f"First segment image S3 key set to: {first_segment_image_s3_key}")
-                elif not img_enabled:
-                    if debug: print(f"Skipping image generation for segment '{segment.title}' as it is disabled by metadata.")
-                else: # img_enabled is true, but no prompt
-                    if debug: print(f"Skipping image generation for segment '{segment.title}' as image_prompt is empty.")
-
+                
                 create_segment_input = {
-                    "sessionSegmentsId": session_id,
-                    "title": segment.title,
+                    "sessionSegmentsId": session_id, "title": segment.title,
                     "description": [segment.description] if segment.description else [],
-                    "image": segment_image_s3_key_or_none,
-                    "owner": segment_owner_value_for_appsync,
-                    "index": idx
+                    "image": segment_image_s3_key_or_none, "owner": segment_owner_value_for_appsync, "index": idx
                 }
                 
-                if segment_owner_value_for_appsync is None:
-                    print(f"Warning: Attempting to create segment '{segment.title}' for session '{session_id}' with a null owner value.")
-
-                segment_vars = {"input": create_segment_input}
-                segment_response = execute_graphql_request(CREATE_SEGMENT_MUTATION, segment_vars)
-
-                created_segment_data = None
-                if segment_response and isinstance(segment_response.get("data"), dict):
-                    created_segment_data = segment_response["data"].get("createSegment")
-
-                if created_segment_data and created_segment_data.get("id"):
-                    created_segment_appsync_details.append(created_segment_data)
-                    print(f"Successfully created segment ID: {created_segment_data['id']} - '{segment.title}' (Index: {created_segment_data.get('index')}, Image Key: {created_segment_data.get('image', 'N/A')})")
+                segment_response = execute_graphql_request(CREATE_SEGMENT_MUTATION, {"input": create_segment_input})
+                if segment_response.get("data", {}).get("createSegment"):
+                    created_segments_count += 1
                 else:
-                    appsync_errors = segment_response.get('errors') if isinstance(segment_response, dict) else 'execute_graphql_request returned non-dict or None'
-                    error_details_str = json.dumps(appsync_errors) if isinstance(appsync_errors, list) and len(appsync_errors) > 0 else str(appsync_errors) if appsync_errors else "No details."
-                    err_msg = f"Failed to create segment '{segment.title}' in AppSync. AppSync Response: {error_details_str}"
-                    print(err_msg)
-                    segment_processing_errors.append(err_msg)
-                
-            except Exception as seg_proc_e:
-                err_msg = f"Exception during processing segment '{segment.title}': {str(seg_proc_e)}"
-                print(err_msg); segment_processing_errors.append(err_msg)
-                traceback.print_exc()
+                    processing_errors.append(f"Failed to create session segment '{segment.title}': {segment_response.get('errors')}")
 
-        if segment_processing_errors:
-            aggregated_error_message = f"Encountered {len(segment_processing_errors)} error(s) during segment processing for session {session_id}. First error: {segment_processing_errors[0]}"
-            print(aggregated_error_message)
-            for i, error_detail in enumerate(segment_processing_errors): print(f"  Segment Error {i+1}: {error_detail}")
+            except Exception as e:
+                processing_errors.append(f"Exception processing session segment '{segment.title}': {e}")
+
+        # Process Highlight Segments
+        def process_highlights(highlights, segment_type_id_key, entity_name):
+            nonlocal created_segments_count
+            print(f"Processing {len(highlights)} {entity_name} highlight segments...")
+            for highlight in highlights:
+                if not highlight.id:
+                    print(f"Skipping {entity_name} highlight for '{highlight.name}' as it has no ID.")
+                    continue
+                try:
+                    print(f"Processing {entity_name} segment for: '{highlight.name}' (ID: {highlight.id})")
+                    create_segment_input = {
+                        segment_type_id_key: highlight.id,
+                        "title": session_title,
+                        "description": highlight.highlights,
+                        "owner": segment_owner_value_for_appsync,
+                        "sessionId": session_id
+                    }
+                    segment_response = execute_graphql_request(CREATE_SEGMENT_MUTATION, {"input": create_segment_input})
+                    if segment_response.get("data", {}).get("createSegment"):
+                        created_segments_count += 1
+                    else:
+                        processing_errors.append(f"Failed to create {entity_name} highlight for '{highlight.name}': {segment_response.get('errors')}")
+                except Exception as e:
+                    processing_errors.append(f"Exception processing {entity_name} highlight for '{highlight.name}': {e}")
+
+        process_highlights(summary_elements_response.adventurerHighlights, "adventurerSegmentsId", "Adventurer")
+        process_highlights(summary_elements_response.locationHighlights, "locationSegmentsId", "Location")
+        process_highlights(summary_elements_response.npcHighlights, "nPCSegmentsId", "NPC")
+
+        if processing_errors:
+            aggregated_error_message = f"Encountered {len(processing_errors)} error(s) during segment processing. First error: {processing_errors[0]}"
             raise Exception(aggregated_error_message)
 
-        print(f"Successfully processed and created {len(created_segment_appsync_details)} out of {len(summary_elements_response.sessionSegments)} segments for session {session_id}.")
+        print(f"Successfully created {created_segments_count} total segments.")
+        
+        # --- Update NPC and Location Descriptions with Session Highlights ---
+        try:
+            print("\n--- Starting Post-Session Description Updates ---")
+            
+            # Update NPCs
+            for highlight in summary_elements_response.npcHighlights:
+                if highlight.id:
+                    update_entity_description(
+                        entity_id=highlight.id,
+                        entity_type="NPC",
+                        highlights=highlight.highlights,
+                        debug=debug
+                    )
 
-        # --- Final Session Update (TLDR, Primary Image, Status to READ) ---
-        print(f"Updating Session {session_id} with TLDR, Primary Image, and status to READ via AppSync...")
+            # Update Locations
+            for highlight in summary_elements_response.locationHighlights:
+                if highlight.id:
+                    update_entity_description(
+                        entity_id=highlight.id,
+                        entity_type="Location",
+                        highlights=highlight.highlights,
+                        debug=debug
+                    )
+            
+            print("--- Finished Post-Session Description Updates ---\n")
+
+        except Exception as desc_update_err:
+            # Log the error but don't fail the entire lambda, as the main task is complete.
+            print(f"An unexpected error occurred during the description update phase: {desc_update_err}")
+            traceback.print_exc()
+
+        # --- Final Session Update ---
+        print(f"Updating Session {session_id} with TLDR, Primary Image, and status to READ...")
         final_update_input = {
-            "id": session_id,
-            "_version": initial_session_version,
-            "transcriptionStatus": "READ",
-            "tldr": [summary_elements_response.tldr] if summary_elements_response.tldr else [],
-            "primaryImage": first_segment_image_s3_key,
-            "errorMessage": None
+            "id": session_id, "_version": initial_session_version,
+            "transcriptionStatus": "READ", "tldr": [summary_elements_response.tldr] if summary_elements_response.tldr else [],
+            "primaryImage": first_segment_image_s3_key, "errorMessage": None
         }
-        final_update_vars = {"input": final_update_input}
-
-        final_update_response_gql = execute_graphql_request(UPDATE_SESSION_MUTATION, final_update_vars)
+        final_update_response_gql = execute_graphql_request(UPDATE_SESSION_MUTATION, {"input": final_update_input})
+        
         if "errors" in final_update_response_gql and not final_update_response_gql.get("data", {}).get("updateSession"):
             raise Exception(f"Final AppSync mutation to update Session to READ state failed: {final_update_response_gql['errors']}")
 
         updated_session_data_from_final_update = final_update_response_gql.get("data", {}).get("updateSession")
         if not updated_session_data_from_final_update or "_version" not in updated_session_data_from_final_update:
-            raise Exception("Final AppSync Session update mutation (to READ) returned no data, unexpected structure, or missing _version.")
+            raise Exception("Final AppSync Session update mutation (to READ) returned no data or missing _version.")
 
-        new_session_version = updated_session_data_from_final_update["_version"]
-        print(f"Successfully updated Session {session_id} to READ state. New version: {new_session_version}. Primary Image: {updated_session_data_from_final_update.get('primaryImage')}")
+        print(f"Successfully updated Session {session_id} to READ state. New version: {updated_session_data_from_final_update['_version']}.")
 
         return {
             'statusCode': 200,
-            'body': json.dumps(f"Processed successfully: {key}. TLDR, Primary Image, and {len(created_segment_appsync_details)} segments created/updated. Session status set to READ.")
+            'body': json.dumps(f"Processed successfully: {key}. {created_segments_count} segments created. Session status set to READ.")
         }
 
     except Exception as e:
@@ -733,14 +1057,10 @@ Guidelines for Segments:
             print(f"Attempting to update Session {session_id_for_error} to ERROR state (v: {session_version_for_error})...")
             try:
                 error_update_input = {
-                    "id": session_id_for_error,
-                    "_version": session_version_for_error,
-                    "transcriptionStatus": "ERROR",
-                    "errorMessage": error_message[:1000]
+                    "id": session_id_for_error, "_version": session_version_for_error,
+                    "transcriptionStatus": "ERROR", "errorMessage": error_message[:1000]
                 }
-                error_update_vars = {"input": error_update_input}
-                error_response = execute_graphql_request(UPDATE_SESSION_MUTATION, error_update_vars)
-
+                error_response = execute_graphql_request(UPDATE_SESSION_MUTATION, {"input": error_update_input})
                 if error_response.get("errors") and not error_response.get("data", {}).get("updateSession"):
                     print(f"Failed to update session to ERROR state: {error_response.get('errors')}")
                 else:

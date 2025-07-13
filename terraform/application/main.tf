@@ -39,6 +39,28 @@ resource "aws_iam_role" "lambda_exec_role" {
   }
 }
 
+resource "aws_iam_policy" "lambda_ssm_access" {
+  name        = "lambda_ssm_access_${var.environment}"
+  description = "IAM policy for SSM Parameter Store access from Lambda"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "ssm:GetParameters"
+        ]
+        Effect   = "Allow"
+        # Scope this down to the specific parameter paths for better security
+        Resource = [
+          "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${var.stripe_secret_key}",
+          "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${var.stripe_webhook_secret}"
+        ]
+      }
+    ]
+  })
+}
+
 # IAM Policy for Lambda to access CloudWatch Logs
 resource "aws_iam_policy" "lambda_logging" {
   name        = "lambda_logging_${var.environment}"
@@ -201,4 +223,9 @@ resource "aws_iam_role_policy_attachment" "lambda_appsync_attachment" {
 resource "aws_iam_role_policy_attachment" "lambda_bedrock_attachment" {
   role       = aws_iam_role.lambda_exec_role.name
   policy_arn = aws_iam_policy.lambda_bedrock.arn
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_ssm_access" {
+  role       = aws_iam_role.lambda_exec_role.name
+  policy_arn = aws_iam_policy.lambda_ssm_access.arn
 }

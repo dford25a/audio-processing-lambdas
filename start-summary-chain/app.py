@@ -1,163 +1,205 @@
+# --- Standard Library Imports ---
 import json
 import boto3
 import time
 import os
+import re
+from typing import Optional, Dict, Any
+
+# --- Third-party Library Imports ---
+import requests
+
+# --- AppSync Helper Function ---
+def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Executes a GraphQL query/mutation against the AppSync endpoint using API Key authentication.
+    """
+    appsync_api_url = os.environ.get('APPSYNC_API_URL')
+    appsync_api_key = os.environ.get('APPSYNC_API_KEY')
+
+    if not appsync_api_url or not appsync_api_key:
+        raise ValueError("APPSYNC_API_URL and APPSYNC_API_KEY environment variables must be set.")
+
+    headers = {
+        'Content-Type': 'application/json',
+        'x-api-key': appsync_api_key
+    }
+    payload = {"query": query, "variables": variables or {}}
+
+    try:
+        response = requests.post(appsync_api_url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error making AppSync request: {e}")
+        return {"errors": [{"message": str(e)}]}
+
+# --- Session ID Parsing Helper ---
+def parse_session_id_from_stem(filename_stem: str) -> Optional[str]:
+    """
+    Parses the Session UUID from a filename stem.
+    """
+    match = re.search(r"Session([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", filename_stem)
+    return match.group(1) if match else None
+
+# --- Session Status Update Helper ---
+def update_session_status(session_id: str, version: int, status: str) -> bool:
+    """
+    Updates the session's transcription status in AppSync.
+    """
+    mutation = """
+    mutation UpdateSession($input: UpdateSessionInput!) {
+      updateSession(input: $input) {
+        id
+        _version
+        transcriptionStatus
+      }
+    }
+    """
+    variables = {
+        "input": {
+            "id": session_id,
+            "_version": version,
+            "transcriptionStatus": status
+        }
+    }
+    response = execute_graphql_request(mutation, variables)
+    if response.get("errors"):
+        print(f"Failed to update session status for {session_id}: {response['errors']}")
+        return False
+    print(f"Successfully updated session {session_id} to status {status}.")
+    return True
+
 
 def lambda_handler(event, context):
     """
     AWS Lambda function to save user-specified fields to an S3 bucket as JSON
-    and invoke the next Lambda function in the chain (segment-audio-dev or segment-audio-prod).
-
-    Can be invoked either directly or through API Gateway.
-
-    Parameters when invoked directly:
-    - event: Input dictionary containing:
-        - "user_specified_fields" (dict): The metadata to save.
-        - "audio_filename" (str): The name of the audio file to process.
-
-    Parameters when invoked through API Gateway:
-    - event: Contains API Gateway proxy integration request info
-        - The actual payload is contained in the 'body' field as a JSON string
+    and invoke the next Lambda function in the chain.
     """
     try:
         # Get environment variables
         bucket = os.environ.get('BUCKET_NAME')
-        environment = os.environ.get('ENVIRONMENT') # Get the ENVIRONMENT variable
+        environment = os.environ.get('ENVIRONMENT') 
 
-        # Determine the target Lambda function name based on the environment
+        # Determine the target Lambda function name
         if environment == "dev":
             target_lambda_function_name = "segment-audio-dev"
         elif environment == "prod":
             target_lambda_function_name = "segment-audio-prod"
         else:
-            # Fallback or error if ENVIRONMENT is not set or invalid
             error_message = "ENVIRONMENT variable is not set or is invalid. Expected 'dev' or 'prod'."
             print(f"[ERROR] {error_message}")
             return format_response(500, {"error": error_message})
 
-        # Check if the request is coming from API Gateway
+        # Parse payload
         if event.get('httpMethod') == 'POST' and event.get('body'):
-            # Parse the JSON body from API Gateway
             payload = json.loads(event.get('body', '{}'))
-            user_specified_fields = payload.get("user_specified_fields")
-            audio_filename = payload.get("audio_filename")
         else:
-            # Direct Lambda invocation
-            user_specified_fields = event.get("user_specified_fields")
-            audio_filename = event.get("audio_filename")
+            payload = event
+        
+        user_specified_fields = payload.get("user_specified_fields")
+        audio_filename = payload.get("audio_filename")
 
-        if not user_specified_fields or not audio_filename:
+        if not all([user_specified_fields, audio_filename]):
             error_message = "Parameters 'user_specified_fields' and 'audio_filename' are required."
             print(f"[ERROR] {error_message}")
             return format_response(400, {"error": error_message})
 
-        # Create S3 client
+        # Save metadata to S3
         s3_client = boto3.client("s3")
-
-        # Define the metadata file path and name
-        metadata_file_path = "public/session_metadata/"
         audio_filename_stem = os.path.splitext(audio_filename)[0]
-        metadata_file_name = f"{audio_filename_stem}.metadata.json"
-        metadata_s3_key = f"{metadata_file_path}{metadata_file_name}"
-
-        # Convert the metadata to JSON
-        json_data = json.dumps(user_specified_fields)
-
-        # Save the metadata file to S3
+        metadata_s3_key = f"public/session_metadata/{audio_filename_stem}.metadata.json"
         s3_client.put_object(
             Bucket=bucket,
             Key=metadata_s3_key,
-            Body=json_data,
+            Body=json.dumps(user_specified_fields),
             ContentType="application/json"
         )
-
-        # Log metadata save success
         print(f"Metadata saved to S3 at s3://{bucket}/{metadata_s3_key}")
 
-        # Check for the audio file's upload status
+        # Wait for audio file upload to complete
         audio_file_key = f"public/audioUploads/{audio_filename}"
         retries = 10
-        wait_time = 10  # seconds
-
+        wait_time = 10
         for attempt in range(retries):
-            # Check for active multipart uploads
-            # Note: list_multipart_uploads might require specific permissions.
-            # Consider checking object existence as an alternative if multipart is not always used or permissions are an issue.
             try:
                 s3_client.head_object(Bucket=bucket, Key=audio_file_key)
-                print(f"Audio file '{audio_file_key}' found. Checking if it's part of an ongoing multipart upload.")
-                # Listing multipart uploads is a good check, but ensure permissions are set.
-                # If head_object confirms presence, and no multipart is listed for it, it's likely complete.
-                response_multipart = s3_client.list_multipart_uploads(Bucket=bucket, Prefix=audio_file_key) # Filter by prefix for efficiency
-                uploads = response_multipart.get("Uploads", [])
-
-                ongoing_upload_for_specific_key = any(upload["Key"] == audio_file_key for upload in uploads)
-
-                if not ongoing_upload_for_specific_key:
-                    print(f"Audio file '{audio_file_key}' is fully uploaded or not part of a multipart upload. Proceeding.")
-                    break
-                else:
-                    print(f"Audio file '{audio_file_key}' is still being uploaded (multipart). Retrying {attempt + 1}/{retries}...")
-                    time.sleep(wait_time)
-
+                # A more reliable check might be needed if large files use multipart uploads often.
+                # For now, presence is considered sufficient for this example.
+                print(f"Audio file '{audio_file_key}' found. Proceeding.")
+                break
             except s3_client.exceptions.ClientError as e:
-                if e.response['Error']['Code'] == '404': # Not Found
-                    print(f"Audio file '{audio_file_key}' not found yet. Retrying {attempt + 1}/{retries}...")
+                if e.response['Error']['Code'] == '404':
+                    print(f"Audio file not found yet. Retry {attempt + 1}/{retries}...")
                     time.sleep(wait_time)
                 else:
-                    # Handle other S3 errors
-                    error_message = f"S3 error checking audio file '{audio_file_key}': {str(e)}"
-                    print(f"[ERROR] {error_message}")
-                    return format_response(500, {"error": error_message})
+                    raise
         else:
-            # If the audio file is still not uploaded/found after retries
-            error_message = f"Audio file '{audio_file_key}' issues after {retries} retries (either not found or still uploading)."
+            error_message = f"Audio file '{audio_file_key}' not found after {retries} retries."
             print(f"[ERROR] {error_message}")
             return format_response(408, {"error": error_message})
 
-        # Create Lambda client
+
+        # Invoke next Lambda
         lambda_client = boto3.client("lambda")
-
-        # Define payload for the next Lambda function
-        next_lambda_payload = {
-            "bucket": bucket,  # Include the bucket in the payload
-            "audio_filename": audio_file_key # Pass the full S3 key
-        }
-
-        # Invoke the target Lambda function
-        print(f"Invoking Lambda function: {target_lambda_function_name} with payload: {json.dumps(next_lambda_payload)}")
+        next_lambda_payload = {"bucket": bucket, "audio_filename": audio_file_key}
         response = lambda_client.invoke(
-            FunctionName=target_lambda_function_name, # Use the dynamically determined function name
-            InvocationType="Event",  # Asynchronous invocation
+            FunctionName=target_lambda_function_name,
+            InvocationType="Event",
             Payload=json.dumps(next_lambda_payload)
         )
 
-        # Log the response from Lambda invocation
-        # For "Event" invocation, response.Payload will be empty, StatusCode is 202 if successful.
-        print(f"Invoked {target_lambda_function_name} Lambda. Status Code: {response.get('StatusCode')}")
+        if response.get('StatusCode') == 202:
+            print(f"Successfully invoked {target_lambda_function_name}.")
+            # --- Update session status to QUEUED ---
+            session_id = parse_session_id_from_stem(audio_filename_stem)
+            if session_id:
+                # Fetch the current session version before updating
+                get_session_query = """
+                query GetSession($id: ID!) {
+                  getSession(id: $id) {
+                    _version
+                  }
+                }
+                """
+                session_data_response = execute_graphql_request(get_session_query, {"id": session_id})
+                current_session = session_data_response.get("data", {}).get("getSession")
 
-        success_message = f"{target_lambda_function_name} Lambda successfully invoked for file '{audio_filename}'."
-        return format_response(200, {"message": success_message, "invoked_function": target_lambda_function_name})
+                if current_session and "_version" in current_session:
+                    session_version = current_session["_version"]
+                    if not update_session_status(session_id, session_version, "QUEUED"):
+                        # Log error but don't fail the entire operation.
+                        print(f"Warning: Failed to update session status for {session_id}, but processing was initiated.")
+                else:
+                    print(f"Warning: Could not fetch current version for session {session_id}. Cannot update status.")
+            else:
+                print(f"Warning: Could not parse session ID from '{audio_filename_stem}'. Cannot update status.")
+            
+            success_message = f"{target_lambda_function_name} successfully invoked for '{audio_filename}'."
+            return format_response(200, {"message": success_message})
+        else:
+            error_message = f"Failed to invoke {target_lambda_function_name}."
+            print(f"[ERROR] {error_message}")
+            return format_response(500, {"error": error_message})
+
 
     except Exception as e:
         error_message = f"Error in Lambda function: {str(e)}"
         import traceback
-        print(f"[ERROR] {error_message}\n{traceback.format_exc()}") # Print full traceback for debugging
+        print(f"[ERROR] {error_message}\n{traceback.format_exc()}")
         return format_response(500, {"error": error_message})
 
 def format_response(status_code, body):
     """
-    Format the response in a way compatible with both direct Lambda invocation
-    and API Gateway integration.
+    Formats the response for API Gateway.
     """
-    formatted_response = {
+    return {
         "statusCode": status_code,
         "headers": {
             "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",  # Enable CORS for browser requests
+            "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "Content-Type,Authorization",
             "Access-Control-Allow-Methods": "OPTIONS,POST"
         },
         "body": json.dumps(body)
     }
-    return formatted_response

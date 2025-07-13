@@ -1,6 +1,8 @@
 # Define the path to your local layer zip file
 locals {
   python_dependencies_layer_zip_path = "${path.module}/python_dependencies_layer.zip"
+  stripe_layer_zip_path = "${path.module}/stripe_layer.zip"
+  
 }
 
 data "aws_ecr_repository" "segment_audio" {
@@ -21,6 +23,15 @@ resource "aws_lambda_layer_version" "python_dependencies_layer" {
   description         = "Lambda Layer containing common Python dependencies (Pydantic, OpenAI, Requests, etc.)"
 }
 
+resource "aws_lambda_layer_version" "stripe_layer" {
+  filename            = local.stripe_layer_zip_path
+  source_code_hash    = filebase64sha256(local.stripe_layer_zip_path)
+
+  layer_name          = "stripe-layer-${var.environment}"
+  compatible_runtimes = ["python3.10", "python3.11"] # Ensure this covers all your Lambda runtimes
+  description         = "Lambda Layer containing common Python dependencies (stripe)"
+}
+
 # Lambda function for start-summary-chain
 resource "aws_lambda_function" "start_summary_chain" {
   function_name = "start-summary-chain${local.config.function_suffix}"
@@ -32,12 +43,18 @@ resource "aws_lambda_function" "start_summary_chain" {
 
   filename         = "${path.module}/start-summary-chain.zip"
   source_code_hash = filebase64sha256("${path.module}/start-summary-chain.zip")
+ 
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
 
   environment {
     variables = {
-      BUCKET_NAME    = local.config.s3_bucket
-      ENVIRONMENT    = var.environment
-      DYNAMODB_TABLE = local.config.dynamodb_table # Still here if this Lambda uses it directly
+      BUCKET_NAME     = local.config.s3_bucket
+      ENVIRONMENT     = var.environment
+      DYNAMODB_TABLE  = local.config.dynamodb_table
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
     }
   }
 
@@ -45,8 +62,8 @@ resource "aws_lambda_function" "start_summary_chain" {
     aws_iam_role_policy_attachment.lambda_logs,
     aws_iam_role_policy_attachment.lambda_s3,
     aws_iam_role_policy_attachment.lambda_dynamodb,
-    aws_iam_role_policy_attachment.lambda_invoke
-    # Add aws_iam_role_policy_attachment.lambda_appsync_attachment if this lambda also needs AppSync
+    aws_iam_role_policy_attachment.lambda_invoke,
+    aws_iam_role_policy_attachment.lambda_appsync_attachment
   ]
 
   tags = {
@@ -307,6 +324,47 @@ resource "aws_lambda_function" "create_campaign_index" {
   }
 }
 
+
+# =========================================================================
+# NEW LAMBDA FUNCTION: stripeWebhook
+# =========================================================================
+resource "aws_lambda_function" "stripe_webhook" {
+  function_name = "stripeWebhook${local.config.function_suffix}"
+  handler       = "app.lambda_handler" # Assuming the python file is named app.py in the zip
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 256 # Increased memory for dependencies
+
+  # You will need to create a zip file containing the Python script (e.g., named app.py)
+  filename         = "${path.module}/stripeWebhook.zip"
+  source_code_hash = filebase64sha256("${path.module}/stripeWebhook.zip")
+
+  layers = [
+    aws_lambda_layer_version.stripe_layer.arn
+  ]
+
+  environment {
+    variables = {
+      ENVIRONMENT                = var.environment
+      APPSYNC_API_URL            = var.appsync_api_url
+      APPSYNC_API_KEY            = var.appsync_api_key
+      STRIPE_SECRET_KEY_NAME     = var.stripe_secret_key
+      STRIPE_WEBHOOK_SECRET_NAME = var.stripe_webhook_secret
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_logs,
+    aws_iam_role_policy_attachment.lambda_appsync_attachment,
+    aws_iam_role_policy_attachment.lambda_ssm_access # Dependency on the new SSM policy
+  ]
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
 # =========================================================================
 # NEW LAMBDA FUNCTION: campaign-chat
 # =========================================================================
@@ -339,6 +397,43 @@ resource "aws_lambda_function" "campaign_chat" {
     aws_iam_role_policy_attachment.lambda_logs,
     aws_iam_role_policy_attachment.lambda_s3,
     aws_iam_role_policy_attachment.lambda_bedrock_access,
+    aws_iam_role_policy_attachment.lambda_appsync_attachment
+  ]
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+
+resource "aws_lambda_function" "spend_credits" {
+  function_name = "spend-credits${local.config.function_suffix}"
+  handler       = "app.lambda_handler" # Assuming the python file is named app.py
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 128
+
+  # You will need to create a zip file containing the Python script
+  filename         = "${path.module}/spend-credits.zip"
+  source_code_hash = filebase64sha256("${path.module}/spend-credits.zip")
+
+  # CORRECTED: This function needs the 'requests' library, which is in the common dependencies layer.
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      ENVIRONMENT     = var.environment
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
+    }
+  }
+
+  # The existing IAM role already has AppSync and CloudWatch Logs permissions
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_logs,
     aws_iam_role_policy_attachment.lambda_appsync_attachment
   ]
 
