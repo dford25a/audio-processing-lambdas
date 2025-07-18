@@ -90,14 +90,13 @@ def call_model(model, audio_path, beam_size=1):
 # --- Lambda Handler ---
 def handler(event, context):
     """
-    Main Lambda function handler. Triggered by an S3 event.
+    Main Lambda function handler. Triggered by a Step Function.
     """
     local_audio_path = None
     try:
-        # 1. Get Bucket and Key from S3 event
-        record = event["Records"][0]["s3"]
-        bucket = record["bucket"]["name"]
-        key = urllib.parse.unquote_plus(record["object"]["key"], encoding='utf-8')
+        # 1. Get Bucket and Key from Step Function event
+        bucket = event["bucket"]
+        key = event["audio_filename"]
         print(f"Processing s3://{bucket}/{key}")
 
         # 2. Prepare local file path safely
@@ -122,29 +121,28 @@ def handler(event, context):
             # Raise the error to be caught by the main exception handler
             raise
 
-        # 5. Prepare and upload transcript to S3
+        # 5. Prepare and upload transcript segment to S3
         # Use os.path.splitext for robustly handling file extensions
         fn_without_ext, _ = os.path.splitext(filename)
-        output_key = f"public/transcriptedAudio/{fn_without_ext}.txt"
+        output_key = f"public/transcripts/segments/{fn_without_ext}.txt"
 
-        print(f"Uploading transcript to s3://{bucket}/{output_key}")
+        print(f"Uploading transcript segment to s3://{bucket}/{output_key}")
         s3.put_object(Bucket=bucket, Key=output_key, Body=transcribed_text)
         print("Upload complete.")
 
-        output = f"Successfully transcribed s3://{bucket}/{key} to s3://{bucket}/{output_key}"
         return {
-            "statusCode": 200,
-            "body": json.dumps({"message": output})
+            "bucket": bucket,
+            "key": output_key
         }
 
     except Exception as e:
         # Catch-all for any errors during execution
         error_message = f"Error processing file. Exception: {str(e)}"
         print(f"FATAL: {error_message}")
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": error_message})
-        }
+        # Re-raise the exception to allow the Step Function's error handling
+        # (Catch/Retry) to take over. This is a more robust pattern for
+        # state machine integrations than returning a success code with an error body.
+        raise e
 
     finally:
         # 6. Cleanup: Ensure the temporary file is always deleted

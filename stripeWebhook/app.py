@@ -113,7 +113,7 @@ def create_user_transactions(user_id: str, email: str):
     response = execute_graphql_request(mutation, variables)
     return response.get("data", {}).get("createUserTransactions")
 
-def update_user_transactions(user_id: str, new_balance: int, version: int):
+def update_user_transactions(user_id: str, new_balance: float, version: int):
     """Updates a user's credit balance."""
     mutation = """
     mutation UpdateUserTransactions($input: UpdateUserTransactionsInput!) {
@@ -127,7 +127,7 @@ def update_user_transactions(user_id: str, new_balance: int, version: int):
     variables = {"input": {"id": user_id, "creditBalance": new_balance, "_version": version}}
     return execute_graphql_request(mutation, variables)
 
-def create_transaction_record(user_id: str, tokens: int, amount: float, payment_intent: str, session_id: str, description: str):
+def create_transaction_record(user_id: str, tokens: float, amount: float, payment_intent: str, session_id: str, description: str):
     """Creates a new transaction record for the purchase."""
     mutation = """
     mutation CreateTransaction($input: CreateTransactionInput!) {
@@ -183,7 +183,7 @@ def handle_checkout_completed(session: Dict[str, Any]):
                 raise Exception(f"Failed to create user transaction record for user {user_id}")
 
         # 3. Update credit balance
-        tokens_to_add = int(pending_tx.get('totalTokens', 0))
+        tokens_to_add = float(pending_tx.get('totalTokens', 0))
         new_balance = user_tx.get('creditBalance', 0) + tokens_to_add
         update_user_tx_response = update_user_transactions(user_id, new_balance, user_tx['_version'])
         if "errors" in update_user_tx_response:

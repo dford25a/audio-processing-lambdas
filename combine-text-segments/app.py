@@ -1,65 +1,59 @@
 import os, json
 import urllib.parse
 import boto3
+import re
 
 s3 = boto3.client("s3")
 
 def lambda_handler(event, context):
-    bucket = event["Records"][0]["s3"]["bucket"]["name"]
-    key = urllib.parse.unquote_plus(event["Records"][0]["s3"]["object"]["key"], encoding="utf-8")
+    # The 'bucket' is at the top level of the event, passed through from the start.
+    bucket = event["bucket"]
+    # The 'transcribed_segments' is an array of results from the Map state.
+    transcribed_segments = event["transcribed_segments"]
 
-    # Assuming the segment naming follows the pattern: `filename_01_of_03.txt`, etc.
-    base_filename = key[:-13]  # Remove '_01_of_03.txt' part
-    total_segments = int(key[-6:-4])  # '03' in '_01_of_03.txt'
-    
-    # List all objects with the same base filename (i.e., all segments)
-    uploaded_objs = s3.list_objects_v2(Bucket=bucket, Prefix=base_filename)
-    uploaded_keys = [obj['Key'] for obj in uploaded_objs.get('Contents', [])]
+    if not transcribed_segments:
+        raise ValueError("Input 'transcribed_segments' is empty.")
 
-    # Check if all segments exist
-    expected_files = [f"{base_filename}_{i:02d}_of_{total_segments:02d}.txt" for i in range(1, total_segments + 1)]
-    missing_files = [file for file in expected_files if file not in uploaded_keys]
-
-    if missing_files:
-        print(f"Missing segments: {missing_files}")
-        return {
-            'statusCode': 400,
-            'body': json.dumps(f"Missing segments: {missing_files}")
-        }
-    else:
-        print(f"all segments present - should write file {base_filename}")
-    
-    # Combine the contents of all segments in order
     combined_text = ""
-    for i in range(1, total_segments + 1):
-        segment_key = f"{base_filename}_{i:02d}_of_{total_segments:02d}.txt"
-        
-        # Fetch each segment from S3 using s3.get_object
+    for segment in transcribed_segments:
+        # Validate that the segment data is a valid result from the Transcribe lambda.
+        # If 'key' is missing, it means a transcription task failed and returned an error object.
+        if "key" not in segment:
+            error_message = f"Invalid segment found in input. A transcription task likely failed. Segment data: {segment}"
+            print(f"ERROR: {error_message}")
+            # Raise an exception to trigger the Step Function's Catch block.
+            raise Exception(error_message)
+
         try:
+            segment_key = segment["key"]
             segment_obj = s3.get_object(Bucket=bucket, Key=segment_key)
             segment_text = segment_obj['Body'].read().decode('utf-8')
             combined_text += segment_text
         except Exception as e:
-            print(f"Error fetching segment {segment_key}: {str(e)}")
-            return {
-                'statusCode': 500,
-                'body': json.dumps(f"Error fetching segment {segment_key}: {str(e)}")
-            }
-    
-    # Remove '_of_03' from the filename and save the combined content
+            # This will now catch errors related to S3 access, etc.
+            error_message = f"Error fetching S3 object for segment data: {segment}. Exception: {str(e)}"
+            print(error_message)
+            raise Exception(error_message)
+
+    # The base filename is the first part of the key of the first segment, with segment info and extension stripped
+    first_segment_key = os.path.basename(transcribed_segments[0]["key"])
+    # Remove _XX_of_YY and .txt/.json extensions
+    base_filename = re.sub(r'(_\d+_of_\d+)?(\.txt|\.json)+$', '', first_segment_key)
     final_filename = f"{base_filename}.txt"
 
     # Upload the combined file back to S3
     try:
-        s3.put_object(Bucket=bucket, Key=f"public/segmentedSummaries/{final_filename}", Body=combined_text)
+        output_key = f"public/transcripts/full/{final_filename}"
+        s3.put_object(Bucket=bucket, Key=output_key, Body=combined_text)
     except Exception as e:
-        print(f"Error uploading combined file {final_filename}: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps(f"Error uploading combined file {final_filename}: {str(e)}")
-        }
+        error_message = f"Error uploading combined file {final_filename}: {str(e)}"
+        print(error_message)
+        raise Exception(error_message)
 
     return {
-        'statusCode': 200,
-        'body': json.dumps(f"Combined file {final_filename} successfully created.")
+        "bucket": bucket,
+        "key": output_key,
+        "userTransactionsTransactionsId": event.get("userTransactionsTransactionsId"),
+        "sessionId": event.get("sessionId"),
+        "creditsToRefund": event.get("creditsToRefund")
     }

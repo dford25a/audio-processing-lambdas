@@ -13,8 +13,8 @@ set -e
 # relative to this script's location (terraform/application/)
 LAMBDA_SOURCE_ROOT="../../" 
 
-# Lambda function names (these should match the folder names under LAMBDA_SOURCE_ROOT)
-LAMBDAS=(
+# Default Lambda function names (these should match the folder names under LAMBDA_SOURCE_ROOT)
+DEFAULT_LAMBDAS=(
   "start-summary-chain"
   "combine-text-segments"
   "final-summary"
@@ -24,6 +24,8 @@ LAMBDAS=(
   "create-campaign-index"
   "stripeWebhook"
   "spend-credits"
+  "refund-credits"
+  "html-to-url"
 )
 
 BUILD_DIR="build" # Temporary build directory within terraform/application/
@@ -32,6 +34,17 @@ BUILD_DIR="build" # Temporary build directory within terraform/application/
 echo "Starting Lambda packaging process..."
 echo "Script location: $(pwd)"
 echo "Lambda source root: $(cd "$LAMBDA_SOURCE_ROOT"; pwd)" # Show absolute path for clarity
+
+# Determine which lambdas to build
+if [ -n "$1" ]; then
+  # If a parameter is provided, build only that specific lambda
+  LAMBDAS=("$1")
+  echo "Building only specified Lambda: $1"
+else
+  # Otherwise, build all default lambdas
+  LAMBDAS=("${DEFAULT_LAMBDAS[@]}")
+  echo "Building all default Lambdas."
+fi
 
 # Clean up previous build directory if it exists
 if [ -d "$BUILD_DIR" ]; then

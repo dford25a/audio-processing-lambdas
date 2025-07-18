@@ -9,6 +9,7 @@ import boto3
 import numpy as np
 import faiss  # Requires faiss-cpu to be in the Lambda Layer
 import requests # Requires requests to be in the Lambda Layer
+from openai import OpenAI
 
 # --- CONFIGURATION ---
 S3_BUCKET_NAME = os.environ.get('BUCKET_NAME')
@@ -18,7 +19,10 @@ APPSYNC_API_URL = os.environ.get('APPSYNC_API_URL')
 APPSYNC_API_KEY_FROM_ENV = os.environ.get('APPSYNC_API_KEY')
 
 EMBEDDING_MODEL_ID = 'amazon.titan-embed-text-v2:0'
-GENERATION_MODEL_ID = 'us.anthropic.claude-3-haiku-20240307-v1:0'
+# GENERATION_MODEL_ID = 'us.anthropic.claude-3-haiku-20240307-v1:0'
+OPENAI_API_KEY_FROM_ENV = os.environ.get('OPENAI_API_KEY')
+if not OPENAI_API_KEY_FROM_ENV:
+    raise ValueError("Environment variable OPENAI_API_KEY not set!")
 
 # --- VALIDATE ESSENTIAL CONFIGURATION ---
 if not S3_BUCKET_NAME: raise ValueError("Environment variable BUCKET_NAME not set!")
@@ -28,6 +32,7 @@ if not APPSYNC_API_KEY_FROM_ENV: raise ValueError("Environment variable APPSYNC_
 # --- AWS & AppSync CLIENTS ---
 s3_client = boto3.client('s3', region_name=AWS_REGION)
 bedrock_runtime = boto3.client(service_name='bedrock-runtime', region_name=AWS_REGION)
+openai_client = OpenAI(api_key=OPENAI_API_KEY_FROM_ENV)
 
 # --- GLOBAL CACHE ---
 cache = {}
@@ -146,19 +151,24 @@ def get_embedding_for_query(query_text: str) -> np.ndarray:
     response_body = json.loads(response.get('body').read())
     return np.array([response_body.get('embedding')], dtype='float32')
 
-def get_bedrock_claude_response(prompt: str, messages: List[Dict[str, str]], debug: bool = True) -> str:
-    if debug: print(f"Sending prompt to Bedrock. System Prompt Length: {len(prompt)}, Messages Count: {len(messages)}")
-    body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31", "max_tokens": 1024, "system": prompt, "messages": messages
-    })
+def get_openai_response(prompt: str, messages: List[Dict[str, str]], debug: bool = True) -> str:
+    if debug: print(f"Sending prompt to OpenAI. System Prompt Length: {len(prompt)}, Messages Count: {len(messages)}")
     try:
-        response = bedrock_runtime.invoke_model(
-            body=body, modelId=GENERATION_MODEL_ID, accept='application/json', contentType='application/json'
+        full_messages = [{"role": "system", "content": prompt}] + messages
+        completion = openai_client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=full_messages,
+            stream=False
         )
-        response_body = json.loads(response.get('body').read())
-        return response_body['content'][0]['text']
+        if completion.choices and completion.choices[0].message and completion.choices[0].message.content:
+            response_content = completion.choices[0].message.content
+            if debug: print(f"OpenAI response content (first 300 chars): {response_content[:300]}...")
+            return response_content
+        else:
+            if debug: print("OpenAI response lacked content or choices.")
+            return "I'm sorry, I couldn't generate a response at this time."
     except Exception as e:
-        if debug: print(f"Error calling Bedrock: {e}"); traceback.print_exc()
+        if debug: print(f"Error calling OpenAI: {e}"); traceback.print_exc()
         return "There was an error communicating with the AI. Please try again."
 
 # --- MAIN LAMBDA HANDLER ---
@@ -200,7 +210,10 @@ def lambda_handler(event, context):
         active_session_ids = get_active_session_ids(campaign_id)
         if not active_session_ids:
              return {'statusCode': 404, 'headers': {'Access-Control-Allow-Origin': '*'}, 'body': json.dumps({'error': f'No active sessions found for campaign {campaign_id}.'})}
-        active_session_ids_set = set(active_session_ids)
+        # Normalize session IDs by stripping "Session" prefix if present
+        def normalize_session_id(sid):
+            return sid[len("Session"):] if isinstance(sid, str) and sid.startswith("Session") else sid
+        active_session_ids_set = set(normalize_session_id(sid) for sid in active_session_ids)
 
         # 2. Load FAISS index and mapping from S3
         index, mapping = load_index_from_s3(campaign_id)
@@ -212,16 +225,45 @@ def lambda_handler(event, context):
         query_embedding = get_embedding_for_query(latest_query)
 
         # 4. Search the index for relevant context
-        k = 10 # Retrieve more results initially to allow for filtering
+        k = 5 # Retrieve more results initially to allow for filtering
         distances, indices = index.search(query_embedding, k)
-        
+        if debug:
+            print(f"FAISS search returned indices: {indices[0].tolist()}")
+            print(f"FAISS search returned distances: {distances[0].tolist()}")
+
         # 5. **NEW**: Filter the retrieved chunks to include only those from active sessions.
         relevant_chunks = []
+        retrieved_chunk_infos = []
+        if debug:
+            print(f"Raw FAISS indices: {indices[0].tolist()}")
+            print(f"Active session IDs: {active_session_ids_set}")
         for i in indices[0]:
+            if i == -1:
+                if debug:
+                    print("Skipping FAISS index -1 (no neighbor found).")
+                continue
             chunk_info = mapping[i]
-            if chunk_info.get("session_id") in active_session_ids_set:
+            retrieved_chunk_infos.append(chunk_info)
+            session_id = chunk_info.get("session_id")
+            # Normalize: strip "Session" prefix if present
+            normalized_session_id = session_id
+            if session_id and session_id.startswith("Session"):
+                normalized_session_id = session_id[len("Session"):]
+            if normalized_session_id in active_session_ids_set:
                 relevant_chunks.append(chunk_info['text'])
-        
+                if debug:
+                    print(f"INCLUDED chunk from session_id: {session_id} (normalized: {normalized_session_id})")
+            else:
+                if debug:
+                    print(f"FILTERED OUT chunk from session_id: {session_id} (normalized: {normalized_session_id}) (not in active_session_ids)")
+        if debug:
+            print(f"Processed {len(retrieved_chunk_infos)} chunk_info objects (pre-filter):")
+            for info in retrieved_chunk_infos:
+                print(json.dumps(info, indent=2))
+            print(f"Filtered {len(relevant_chunks)} relevant_chunks (text only):")
+            for chunk in relevant_chunks:
+                print(chunk)
+
         if not relevant_chunks:
             # Handle case where no relevant context is found in active sessions
             relevant_chunks.append("No specific context was found in the active session transcripts for this query.")
@@ -229,14 +271,14 @@ def lambda_handler(event, context):
         context_str = "\n\n---\n\n".join(relevant_chunks)
         if debug: print(f"Retrieved {len(relevant_chunks)} relevant, filtered chunks from index.")
         
-        # 6. Construct System Prompt and call Bedrock
-        system_prompt = f"""You are Scribe, an AI chat assistant for a TTRPG campaign. Your goal is to answer questions based on the provided context from session transcripts. Base your answers ONLY on the context below. If the answer is not in the context, state that you cannot find the information in the available transcripts.
+        # 6. Construct System Prompt and call OpenAI
+        system_prompt = f"""You are Scribe, an AI chat assistant for a TTRPG campaign. Your goal is to answer questions based on the provided chunks of context from TTRPG transcripts. Do your best to answer the questions given the context below. 
 
 <context>
 {context_str}
 </context>
 """
-        ai_response_content = get_bedrock_claude_response(system_prompt, user_chat_messages, debug=debug)
+        ai_response_content = get_openai_response(system_prompt, user_chat_messages, debug=debug)
 
         return {
             'statusCode': 200,

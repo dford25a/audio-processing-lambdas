@@ -12,6 +12,7 @@ import time
 import concurrent.futures
 from multiprocessing import cpu_count
 
+
 DYNAMODB_TABLE_NAME = os.environ.get('DYNAMODB_TABLE')
 
 # Initialize clients - fixed config
@@ -91,7 +92,7 @@ def handler(event, context):
         base_name = os.path.splitext(fn)[0]
         input_ext = os.path.splitext(fn)[1].lower().lstrip('.')
         output_ext = 'aac'
-        out_subdir = 'public/audioUploadsSegmented/'
+        out_subdir = 'public/audio-segments/'
         
         print(f"Processing file: {fn} from bucket: {bucket}")
         
@@ -140,6 +141,18 @@ def handler(event, context):
         
         # Calculate segments
         segment_length_sec = 300  # 5 minutes
+        
+        # If the audio is shorter than the segment length, no need to segment
+        if duration_seconds <= segment_length_sec:
+            print("Audio is shorter than segment length, skipping segmentation.")
+            return {
+                "bucket": bucket,
+                "segments": [key],
+                "userTransactionsTransactionsId": event.get("userTransactionsTransactionsId"),
+                "sessionId": event.get("sessionId"),
+                "creditsToRefund": event.get("creditsToRefund")
+            }
+
         num_segments = math.ceil(duration_seconds / segment_length_sec)
         print(f"File will be split into {num_segments} segments of {segment_length_sec} seconds each")
         
@@ -191,35 +204,53 @@ def handler(event, context):
                         'error': str(exc)
                     })
         
-        # Check if all segments were processed successfully
-        all_successful = all(result['success'] for result in results)
-        
+        # Check if all segments were processed successfully and construct the output
+        processed_segments = [result for result in results if result['success']]
+        failed_segments = [result for result in results if not result['success']]
+
         # Update DynamoDB status
         try:
             if items:
                 item = items[0]
-                if all_successful:
-                    item['transcriptionStatus'] = 'PROCESSING'
-                else:
+                if failed_segments:
                     item['transcriptionStatus'] = 'ERROR'
+                else:
+                    item['transcriptionStatus'] = 'PROCESSING'
                 table.put_item(Item=item)
-                print(f"Updated DynamoDB status to {'PROCESSING' if all_successful else 'ERROR'} for {fn}")
+                print(f"Updated DynamoDB status to {'ERROR' if failed_segments else 'PROCESSING'} for {fn}")
         except Exception as db_err:
             print(f"Warning: Could not update DynamoDB completion status: {db_err}")
+
+        if failed_segments:
+            # If any segment failed, raise an exception to be caught by the Step Function
+            error_details = ", ".join([f"Segment {s['segment']}: {s.get('error', 'Unknown')}" for s in failed_segments])
+            raise Exception(f"{len(failed_segments)} segment(s) failed to process: {error_details}")
         
-        # Return success/failure information
+        # If all segments succeeded, return the payload directly for the Map state
+        print("All segments processed successfully.")
+        output_keys = [result["output_key"] for result in processed_segments]
+        
         return {
-            "statusCode": 200 if all_successful else 500,
-            "body": json.dumps({
-                "num_segments": num_segments,
-                "processed_segments": len([r for r in results if r['success']]),
-                "failed_segments": len([r for r in results if not r['success']]),
-                "message": "Audio processing completed successfully" if all_successful else "Audio processing completed with errors"
-            })
+            "bucket": bucket,
+            "segments": output_keys,
+            "userTransactionsTransactionsId": event.get("userTransactionsTransactionsId"),
+            "sessionId": event.get("sessionId"),
+            "creditsToRefund": event.get("creditsToRefund")
+        }
+        # If all segments succeeded, return the payload directly for the Map state
+        print("All segments processed successfully.")
+        output_keys = [result["output_key"] for result in processed_segments]
+        
+        return {
+            "bucket": bucket,
+            "segments": output_keys,
+            "userTransactionsTransactionsId": event.get("userTransactionsTransactionsId"),
+            "sessionId": event.get("sessionId"),
+            "creditsToRefund": event.get("creditsToRefund")
         }
     
     except Exception as e:
-        print(f"Error processing audio: {str(e)}")
+        print(f"FATAL: Error processing audio: {str(e)}")
         
         # Update DynamoDB with error status
         try:
@@ -235,13 +266,8 @@ def handler(event, context):
         except Exception as inner_e:
             print(f"Error updating DynamoDB error status: {str(inner_e)}")
         
-        return {
-            "statusCode": 500,
-            "body": json.dumps({
-                "error": "Error processing the file", 
-                "details": str(e)
-            })
-        }
+        # Re-raise the exception to allow the Step Function's Catch block to handle it.
+        raise e
     
     finally:
         # Clean up temp directory

@@ -71,7 +71,7 @@ def get_session(session_id: str):
     response = execute_graphql_request(query, variables)
     return response.get("data", {}).get("getSession")
 
-def update_user_transactions(user_transactions_id: str, new_balance: int, version: int):
+def update_user_transactions(user_transactions_id: str, new_balance: float, version: int):
     """Updates a user's credit balance."""
     mutation = """
     mutation UpdateUserTransactions($input: UpdateUserTransactionsInput!) {
@@ -99,7 +99,7 @@ def update_session_status(session_id: str, version: int):
     variables = {"input": {"id": session_id, "purchaseStatus": "PURCHASED", "_version": version}}
     return execute_graphql_request(mutation, variables)
 
-def create_spend_transaction(user_transactions_id: str, session_id: str, credits_spent: int):
+def create_spend_transaction(user_transactions_id: str, session_id: str, credits_spent: float):
     """Creates a transaction record for the credits spent."""
     mutation = """
     mutation CreateTransaction($input: CreateTransactionInput!) {
@@ -146,9 +146,9 @@ def lambda_handler(event, context):
             print("[ERROR] userTransactionsTransactionsId is missing from the request body.")
             return {'statusCode': 400, 'body': json.dumps({'error': 'Missing userTransactionsTransactionsId in request body'})}
 
-        if not session_id or not isinstance(credits_to_spend, int) or credits_to_spend <= 0:
+        if not session_id or not isinstance(credits_to_spend, (int, float)) or credits_to_spend <= 0:
             print(f"[ERROR] Invalid input: sessionId={session_id}, creditsToSpend={credits_to_spend}")
-            return {'statusCode': 400, 'body': json.dumps({'error': 'sessionId and a positive integer creditsToSpend value are required.'})}
+            return {'statusCode': 400, 'body': json.dumps({'error': 'sessionId and a positive numeric creditsToSpend value are required.'})}
 
         print(f"📊 Spend request details: UserTransactionsID={user_transactions_id}, Session={session_id}, Credits={credits_to_spend}")
 

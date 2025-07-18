@@ -557,7 +557,7 @@ def generate_and_upload_image(
             prompt=full_prompt,
             n=1,
             size="1536x1024",
-            quality="low"#image_quality
+            quality=image_quality
         )
 
         if response.data and response.data[0].b64_json:
@@ -655,23 +655,37 @@ def lambda_handler(event, context):
             print(f"AWS Region: {AWS_REGION}")
             print(f"DynamoDB Session Table (from DYNAMODB_TABLE env var): {DYNAMODB_TABLE_NAME}")
 
-        sns_message_str = event['Records'][0]['Sns']['Message']
-        if debug:
-            print(f"Parsing SNS message content: {sns_message_str}")
-        
-        sns_payload = json.loads(sns_message_str)
+        # Support both Step Functions (direct event) and legacy SNS/S3 (event['Records'])
+        if "Records" in event and isinstance(event["Records"], list) and event["Records"]:
+            # Legacy SNS/S3 trigger
+            record = event['Records'][0]
+            s3_transcript_bucket = record["s3"]["bucket"]["name"]
+            key = urllib.parse.unquote_plus(record['s3']['object']['key'], encoding='utf-8')
+            s3_image_upload_bucket = os.environ.get('S3_IMAGE_BUCKET_NAME', s3_transcript_bucket)
+            if debug:
+                print("Event detected as legacy SNS/S3 trigger format.")
+        else:
+            # Step Functions direct input (expects {"bucket": "...", "key": "..."})
+            s3_transcript_bucket = event["bucket"]
+            key = urllib.parse.unquote_plus(event["key"], encoding='utf-8')
+            s3_image_upload_bucket = os.environ.get('S3_IMAGE_BUCKET_NAME', s3_transcript_bucket)
+            if debug:
+                print("Event detected as Step Functions direct input format (bucket/key at top level).")
 
-        record = sns_payload['Records'][0]
-        s3_transcript_bucket = record["s3"]["bucket"]["name"]
-        s3_image_upload_bucket = os.environ.get('S3_IMAGE_BUCKET_NAME', s3_transcript_bucket)
-        key = urllib.parse.unquote_plus(record['s3']['object']['key'], encoding='utf-8')
-
-        s3_transcript_output_prefix = 'public/transcriptedSummary/'
-        s3_segment_image_prefix = 'public/segmentImages/'
-        s3_metadata_prefix = 'public/session_metadata/'
+        s3_transcript_output_prefix = 'public/summaries/final/'
+        s3_segment_image_prefix = 'public/segment-images/'
+        s3_metadata_prefix = 'public/session-metadata/'
 
         original_filename_with_ext = os.path.basename(key)
         filename_stem_for_search = os.path.splitext(original_filename_with_ext)[0]
+
+        # --- Extract the base name for metadata lookup ---
+        # The filename might be post-processed (e.g., '..._combined.txt'), so we need the original stem.
+        metadata_stem_match = re.match(r"(campaign[0-9a-fA-F-]+Session[0-9a-fA-F-]+)", filename_stem_for_search)
+        if metadata_stem_match:
+            filename_stem_for_metadata = metadata_stem_match.group(1)
+        else:
+            filename_stem_for_metadata = filename_stem_for_search # Fallback to the original stem if no match
                                                                                 
         if debug:
             print(f"Processing transcript file: {key} from bucket: {s3_transcript_bucket}")
@@ -728,7 +742,7 @@ def lambda_handler(event, context):
         img_quality = 'medium' 
         img_style_prompt = image_format_lookup["fantasy"]["longDescription"] 
 
-        metadata_filename = f"{filename_stem_for_search}.metadata.json"
+        metadata_filename = f"{filename_stem_for_metadata}.metadata.json"
         metadata_s3_key = f"{s3_metadata_prefix.rstrip('/')}/{metadata_filename}"
 
         if debug:
@@ -772,7 +786,7 @@ def lambda_handler(event, context):
             if image_instructions:
                 img_enabled = image_instructions.get("imageGenerationEnabled", True)
                 
-                quality_key = image_instructions.get("imageQuality", "Standard quality")
+                quality_key = image_instructions.get("imageQuality", "medium")
                 img_quality = image_quality_lookup.get(quality_key, "medium")
 
                 style_key = image_instructions.get("selectedStyle", "fantasy")
@@ -817,6 +831,8 @@ def lambda_handler(event, context):
         all_adventurers, adventurer_context_string_campaign = fetch_campaign_data(campaign_id, GET_ADVENTURERS_BY_CAMPAIGN_QUERY, 'Adventurers', 'adventurer', debug)
         all_locations, location_context_string_campaign = fetch_campaign_data(campaign_id, GET_LOCATIONS_BY_CAMPAIGN_QUERY, 'Locations', 'location', debug)
 
+        # Always read the full transcript from the new location
+        # key is expected to be the full transcript key (public/transcripts/full/{base}.txt)
         s3_object_data = s3_client.get_object(Bucket=s3_transcript_bucket, Key=key)
         text_to_summarize = s3_object_data['Body'].read().decode('utf-8')
         if not text_to_summarize.strip():
@@ -912,7 +928,7 @@ Example Output Structure (follow this JSON format precisely):
         if debug: print(f"### LLM OUTPUT (After ID Mapping) ###\n{summary_elements_response.model_dump_json(indent=2)}")
 
         
-        s3_summary_output_key = f"{s3_transcript_output_prefix.rstrip('/')}/{filename_stem_for_search}.json"
+        s3_summary_output_key = f"{s3_transcript_output_prefix.rstrip('/')}/{filename_stem_for_metadata}.json"
         s3_client.put_object(
             Bucket=s3_transcript_bucket,
             Key=s3_summary_output_key,
@@ -1042,7 +1058,10 @@ Example Output Structure (follow this JSON format precisely):
 
         return {
             'statusCode': 200,
-            'body': json.dumps(f"Processed successfully: {key}. {created_segments_count} segments created. Session status set to READ.")
+            'body': json.dumps(f"Processed successfully: {key}. {created_segments_count} segments created. Session status set to READ."),
+            'userTransactionsTransactionsId': event.get('userTransactionsTransactionsId'),
+            'sessionId': event.get('sessionId'),
+            'creditsToRefund': event.get('creditsToRefund')
         }
 
     except Exception as e:

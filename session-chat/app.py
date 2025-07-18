@@ -17,7 +17,8 @@ APPSYNC_API_URL = os.environ.get('APPSYNC_API_URL') # For AppSync
 APPSYNC_API_KEY_FROM_ENV = os.environ.get('APPSYNC_API_KEY') # For AppSync
 S3_BUCKET_NAME = os.environ.get('BUCKET_NAME')
 # This is the prefix where the summary transcript (JSON) is stored by the other lambda
-S3_TRANSCRIPT_SUMMARY_PREFIX = os.environ.get('S3_SOURCE_TRANSCRIPT_PREFIX', 'public/transcriptedSummary')
+S3_TRANSCRIPT_FULL_PREFIX = os.environ.get('S3_SOURCE_TRANSCRIPT_PREFIX', 'public/transcripts/full')
+S3_TRANSCRIPT_SUMMARY_PREFIX = os.environ.get('S3_SOURCE_TRANSCRIPT_PREFIX', 'public/transcripts/summary')
 AWS_REGION = os.environ.get('AWS_REGION', 'us-east-2') # Default region if not set
 
 # --- VALIDATE ESSENTIAL CONFIGURATION ---
@@ -224,28 +225,25 @@ def lambda_handler(event, context):
         segments_context_str = "\n\n".join(all_segments_content) if all_segments_content else "No segments available for this session."
         if debug: print(f"Fetched {len(all_segments_content)} segments. Context length: {len(segments_context_str)}")
 
-        # 3. Fetch Original Transcript Summary Text from S3 (using path from lambda_fix_01)
-        s3_transcript_text = "No transcript summary available from S3."
-        # Construct the key based on the convention from lambda_fix_01
-        # It expects campaignId and sessionId in the filename.
-        # Example: public/transcriptedSummary/campaign{campaign_id}Session{session_id}.json
-        transcript_filename = f"campaign{campaign_id}Session{session_id}.json" # Assuming .json as per lambda_fix_01
-        s3_key = f"{S3_TRANSCRIPT_SUMMARY_PREFIX.rstrip('/')}/{transcript_filename}"
+        # 3. Fetch Original Full Transcript Text from S3
+        s3_transcript_text = "No full transcript available from S3."
+        transcript_filename = f"campaign{campaign_id}Session{session_id}.txt"
+        s3_key = f"{S3_TRANSCRIPT_FULL_PREFIX.rstrip('/')}/{transcript_filename}"
         
-        if debug: print(f"Attempting to fetch transcript summary from S3: bucket='{S3_BUCKET_NAME}', key='{s3_key}'")
+        if debug: print(f"Attempting to fetch full transcript from S3: bucket='{S3_BUCKET_NAME}', key='{s3_key}'")
         try:
             s3_object = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
             raw_s3_content = s3_object['Body'].read().decode('utf-8')
             if raw_s3_content.strip():
-                s3_transcript_text = raw_s3_content # Use the raw content if it's just text
-                if debug: print(f"Transcript summary fetched successfully from S3. Length: {len(s3_transcript_text)}")
+                s3_transcript_text = raw_s3_content
+                if debug: print(f"Full transcript fetched successfully from S3. Length: {len(s3_transcript_text)}")
             else:
-                if debug: print(f"Transcript summary file from S3 (s3://{S3_BUCKET_NAME}/{s3_key}) is empty.")
+                if debug: print(f"Full transcript file from S3 (s3://{S3_BUCKET_NAME}/{s3_key}) is empty.")
         except s3_client.exceptions.NoSuchKey:
-            if debug: print(f"Transcript summary file not found in S3 at s3://{S3_BUCKET_NAME}/{s3_key}")
-            # This might be acceptable, so we proceed with "No transcript summary available".
+            if debug: print(f"Full transcript file not found in S3 at s3://{S3_BUCKET_NAME}/{s3_key}")
+            # This might be acceptable, so we proceed with "No full transcript available".
         except Exception as e:
-            if debug: print(f"Error fetching/reading transcript summary from S3 (s3://{S3_BUCKET_NAME}/{s3_key}): {str(e)}"); traceback.print_exc()
+            if debug: print(f"Error fetching/reading full transcript from S3 (s3://{S3_BUCKET_NAME}/{s3_key}): {str(e)}"); traceback.print_exc()
             # Also proceed with default message, but log the error.
 
         # 4. Construct System Prompt for OpenAI
@@ -258,10 +256,10 @@ Use the following context to inform your responses:
 - **Detailed Session Segments:**
 {segments_context_str}
 
-- **Full Session Transcript Summary (if available):**
-<transcript_summary>
+- **Full Session Transcript (if available):**
+<full_transcript>
 {s3_transcript_text}
-</transcript_summary>
+</full_transcript>
 
 Your goal is to be a helpful chat assistant that provides relevant responses, continuing the conversation naturally based on the user's messages and the provided context.
 """

@@ -97,6 +97,7 @@ resource "aws_iam_policy" "lambda_s3" {
         Action = [
           "s3:GetObject",
           "s3:PutObject",
+          "s3:PutObjectAcl",
           "s3:ListBucket",
           "s3:ListMultipartUploadParts",
           "s3:ListBucketMultipartUploads"
@@ -104,7 +105,9 @@ resource "aws_iam_policy" "lambda_s3" {
         Effect   = "Allow"
         Resource = [
           data.aws_s3_bucket.current_bucket.arn, # Bucket level permissions (e.g., for ListBucket)
-          "${data.aws_s3_bucket.current_bucket.arn}/*" # Object level permissions
+          "${data.aws_s3_bucket.current_bucket.arn}/*", # Object level permissions
+          aws_s3_bucket.html_bucket.arn,
+          "${aws_s3_bucket.html_bucket.arn}/*"
         ]
       }
     ]
@@ -228,4 +231,60 @@ resource "aws_iam_role_policy_attachment" "lambda_bedrock_attachment" {
 resource "aws_iam_role_policy_attachment" "lambda_ssm_access" {
   role       = aws_iam_role.lambda_exec_role.name
   policy_arn = aws_iam_policy.lambda_ssm_access.arn
+}
+
+resource "aws_iam_policy" "step_function_start_execution_policy" {
+  name        = "step_function_start_execution_policy_${var.environment}"
+  description = "Policy to allow lambda to start step function execution"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "states:StartExecution"
+        ],
+        Resource = aws_sfn_state_machine.audio_processing_state_machine.arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_step_function_start_execution" {
+  role       = aws_iam_role.lambda_exec_role.name
+  policy_arn = aws_iam_policy.step_function_start_execution_policy.arn
+}
+
+resource "aws_s3_bucket" "html_bucket" {
+  bucket = local.config.html_s3_bucket
+
+  tags = {
+    Environment = var.environment
+    Name        = "HTML Storage Bucket"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "html_bucket_public_access" {
+  bucket = aws_s3_bucket.html_bucket.id
+
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+resource "aws_s3_bucket_policy" "html_bucket_policy" {
+  bucket = aws_s3_bucket.html_bucket.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = "s3:GetObject"
+        Resource  = "${aws_s3_bucket.html_bucket.arn}/*"
+      }
+    ]
+  })
 }

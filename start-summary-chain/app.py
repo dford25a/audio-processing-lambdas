@@ -74,20 +74,15 @@ def update_session_status(session_id: str, version: int, status: str) -> bool:
 def lambda_handler(event, context):
     """
     AWS Lambda function to save user-specified fields to an S3 bucket as JSON
-    and invoke the next Lambda function in the chain.
+    and invoke the Step Function to start the processing chain.
     """
     try:
         # Get environment variables
         bucket = os.environ.get('BUCKET_NAME')
-        environment = os.environ.get('ENVIRONMENT') 
+        state_machine_arn = os.environ.get('STATE_MACHINE_ARN')
 
-        # Determine the target Lambda function name
-        if environment == "dev":
-            target_lambda_function_name = "segment-audio-dev"
-        elif environment == "prod":
-            target_lambda_function_name = "segment-audio-prod"
-        else:
-            error_message = "ENVIRONMENT variable is not set or is invalid. Expected 'dev' or 'prod'."
+        if not bucket or not state_machine_arn:
+            error_message = "BUCKET_NAME and STATE_MACHINE_ARN environment variables must be set."
             print(f"[ERROR] {error_message}")
             return format_response(500, {"error": error_message})
 
@@ -108,7 +103,7 @@ def lambda_handler(event, context):
         # Save metadata to S3
         s3_client = boto3.client("s3")
         audio_filename_stem = os.path.splitext(audio_filename)[0]
-        metadata_s3_key = f"public/session_metadata/{audio_filename_stem}.metadata.json"
+        metadata_s3_key = f"public/session-metadata/{audio_filename_stem}.metadata.json"
         s3_client.put_object(
             Bucket=bucket,
             Key=metadata_s3_key,
@@ -124,8 +119,6 @@ def lambda_handler(event, context):
         for attempt in range(retries):
             try:
                 s3_client.head_object(Bucket=bucket, Key=audio_file_key)
-                # A more reliable check might be needed if large files use multipart uploads often.
-                # For now, presence is considered sufficient for this example.
                 print(f"Audio file '{audio_file_key}' found. Proceeding.")
                 break
             except s3_client.exceptions.ClientError as e:
@@ -139,48 +132,46 @@ def lambda_handler(event, context):
             print(f"[ERROR] {error_message}")
             return format_response(408, {"error": error_message})
 
-
-        # Invoke next Lambda
-        lambda_client = boto3.client("lambda")
-        next_lambda_payload = {"bucket": bucket, "audio_filename": audio_file_key}
-        response = lambda_client.invoke(
-            FunctionName=target_lambda_function_name,
-            InvocationType="Event",
-            Payload=json.dumps(next_lambda_payload)
+        # Invoke Step Function
+        sfn_client = boto3.client('stepfunctions')
+        sfn_payload = {
+            "bucket": bucket, 
+            "audio_filename": audio_file_key,
+            "userTransactionsTransactionsId": payload.get("userTransactionsTransactionsId"),
+            "sessionId": payload.get("sessionId"),
+            "creditsToRefund": payload.get("creditsToSpend")
+        }
+        response = sfn_client.start_execution(
+            stateMachineArn=state_machine_arn,
+            input=json.dumps(sfn_payload)
         )
 
-        if response.get('StatusCode') == 202:
-            print(f"Successfully invoked {target_lambda_function_name}.")
-            # --- Update session status to QUEUED ---
-            session_id = parse_session_id_from_stem(audio_filename_stem)
-            if session_id:
-                # Fetch the current session version before updating
-                get_session_query = """
-                query GetSession($id: ID!) {
-                  getSession(id: $id) {
-                    _version
-                  }
-                }
-                """
-                session_data_response = execute_graphql_request(get_session_query, {"id": session_id})
-                current_session = session_data_response.get("data", {}).get("getSession")
+        # --- Update session status to QUEUED ---
+        session_id = parse_session_id_from_stem(audio_filename_stem)
+        if session_id:
+            # Fetch the current session version before updating
+            get_session_query = """
+            query GetSession($id: ID!) {
+              getSession(id: $id) {
+                _version
+              }
+            }
+            """
+            session_data_response = execute_graphql_request(get_session_query, {"id": session_id})
+            current_session = session_data_response.get("data", {}).get("getSession")
 
-                if current_session and "_version" in current_session:
-                    session_version = current_session["_version"]
-                    if not update_session_status(session_id, session_version, "QUEUED"):
-                        # Log error but don't fail the entire operation.
-                        print(f"Warning: Failed to update session status for {session_id}, but processing was initiated.")
-                else:
-                    print(f"Warning: Could not fetch current version for session {session_id}. Cannot update status.")
+            if current_session and "_version" in current_session:
+                session_version = current_session["_version"]
+                if not update_session_status(session_id, session_version, "QUEUED"):
+                    # Log error but don't fail the entire operation.
+                    print(f"Warning: Failed to update session status for {session_id}, but processing was initiated.")
             else:
-                print(f"Warning: Could not parse session ID from '{audio_filename_stem}'. Cannot update status.")
-            
-            success_message = f"{target_lambda_function_name} successfully invoked for '{audio_filename}'."
-            return format_response(200, {"message": success_message})
+                print(f"Warning: Could not fetch current version for session {session_id}. Cannot update status.")
         else:
-            error_message = f"Failed to invoke {target_lambda_function_name}."
-            print(f"[ERROR] {error_message}")
-            return format_response(500, {"error": error_message})
+            print(f"Warning: Could not parse session ID from '{audio_filename_stem}'. Cannot update status.")
+        
+        success_message = f"Step Function successfully invoked for '{audio_filename}'."
+        return format_response(200, {"message": success_message, "executionArn": response['executionArn']})
 
 
     except Exception as e:

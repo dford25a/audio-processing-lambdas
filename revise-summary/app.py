@@ -17,7 +17,8 @@ APPSYNC_API_URL = os.environ.get('APPSYNC_API_URL')
 APPSYNC_API_KEY_FROM_ENV = os.environ.get('APPSYNC_API_KEY')
 AWS_REGION = os.environ.get('AWS_REGION', 'us-east-2') # Default region if not set
 BUCKET_NAME = os.environ.get('BUCKET_NAME') # Bucket where transcripts are stored
-S3_SOURCE_TRANSCRIPT_PREFIX = os.environ.get('S3_SOURCE_TRANSCRIPT_PREFIX', 'public/transcriptedSummary') # Prefix for source transcript files
+S3_SOURCE_TRANSCRIPT_PREFIX = os.environ.get('S3_SOURCE_TRANSCRIPT_PREFIX', 'public/transcripts/full') # Prefix for source transcript files
+S3_METADATA_PREFIX = os.environ.get('S3_METADATA_PREFIX', 'public/session-metadata') # Prefix for metadata files
 
 # --- VALIDATE ESSENTIAL CONFIGURATION ---
 if not OPENAI_API_KEY_FROM_ENV:
@@ -39,6 +40,61 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY_FROM_ENV)
 
 # --- Pydantic Data Models ---
 # For structuring data passed to and received from the LLM
+
+# --- Lookups for Generation Settings ---
+# Copied from final-summary/app.py for consistency
+content_length_lookup = {
+    (0, 0.33): "Each segment length should be short and concise, around 2-4 sentences.",
+    (0.33, 0.66): "Segment length should be 4-5 sentences.",
+    (0.66, 1.01): "Each segment length should be highly detailed and verbose, around 6-8 sentences."
+}
+
+content_style_lookup = {
+    (0, 0.33): "Write in a direct, factual, to-the-point style.",
+    (0.33, 0.66): "Write in a balanced, narrative style.",
+    (0.66, 1.01): "Write in a highly narrative, descriptive, and dramatic manner."
+}
+
+def get_generation_settings_string(instructions: Optional[Dict[str, Any]]) -> str:
+    """Converts a generation_instructions object into a human-readable string."""
+    if not instructions:
+        return "No specific generation settings were provided."
+
+    parts = []
+    
+    # Content Length
+    length_val = instructions.get("contentLength", 0.5)
+    for (start, end), desc in content_length_lookup.items():
+        if start <= length_val < end:
+            parts.append(desc)
+            break
+            
+    # Content Style
+    style_val = instructions.get("contentStyle", 0.5)
+    for (start, end), desc in content_style_lookup.items():
+        if start <= style_val < end:
+            parts.append(desc)
+            break
+
+    # Tones
+    tones = instructions.get("selectedTones")
+    if tones and isinstance(tones, list):
+        parts.append(f"Adopt the following tones: {', '.join(tones)}.")
+
+    # Emphases
+    emphases = instructions.get("selectedEmphases")
+    if emphases and isinstance(emphases, list):
+        parts.append(f"Place special emphasis on the following aspects: {', '.join(emphases)}.")
+
+    # Booleans
+    if instructions.get("includeCharacterQuotes") is True:
+        parts.append("You MUST include direct quotes from characters.")
+    if instructions.get("includeGameMechanics") is True:
+        parts.append("You MUST include references to game mechanics (skill checks, dice rolls, etc.).")
+        
+    return "\n- ".join(parts) if parts else "Default generation settings were used."
+
+
 class SegmentContentForLLM(BaseModel):
     title: str
     description: str
@@ -142,7 +198,7 @@ def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = No
 
 
 # --- OpenAI Helper Function ---
-def get_openai_completion(prompt_text: str, client: OpenAI, model: str = "gpt-4.1-mini", debug: bool = True) -> Optional[str]:
+def get_openai_completion(prompt_text: str, client: OpenAI, model: str = "gpt-4.1-2025-04-14", debug: bool = True) -> Optional[str]:
     if debug: print(f"Sending prompt to OpenAI (model: {model}). Prompt length: {len(prompt_text)}")
     messages = [{"role": "user", "content": prompt_text}]
     try:
@@ -180,6 +236,7 @@ def lambda_handler(event, context):
         body = json.loads(body_str)
         session_id_from_request = body.get('sessionId')
         user_revisions = body.get('userRevisions', "")
+        new_generation_instructions = body.get('generation_instructions')
 
         if not session_id_from_request:
             if debug: print("sessionId is missing from request body.")
@@ -211,9 +268,26 @@ def lambda_handler(event, context):
         campaign_id_from_gql = campaign_data["id"]
 
         filename_stem = f"campaign{campaign_id_from_gql}Session{session_id_from_request}"
-        constructed_transcript_s3_key = f"{S3_SOURCE_TRANSCRIPT_PREFIX.rstrip('/')}/{filename_stem}.json"
+        constructed_transcript_s3_key = f"{S3_SOURCE_TRANSCRIPT_PREFIX.rstrip('/')}/{filename_stem}.txt"
+        metadata_s3_key = f"{S3_METADATA_PREFIX.rstrip('/')}/{filename_stem}.metadata.json"
 
         if debug: print(f"Constructed transcript S3 key: s3://{BUCKET_NAME}/{constructed_transcript_s3_key}")
+        if debug: print(f"Constructed metadata S3 key: s3://{BUCKET_NAME}/{metadata_s3_key}")
+
+        # Fetch original generation settings from metadata
+        original_generation_instructions = None
+        try:
+            metadata_obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=metadata_s3_key)
+            metadata_content = json.loads(metadata_obj['Body'].read().decode('utf-8'))
+            original_generation_instructions = metadata_content.get("generation_instructions")
+            if debug: print(f"Successfully fetched and parsed metadata. Original settings: {json.dumps(original_generation_instructions)}")
+        except s3_client.exceptions.NoSuchKey:
+            if debug: print(f"Metadata file not found at {metadata_s3_key}. Cannot retrieve original generation settings.")
+        except Exception as e:
+            if debug: print(f"Error fetching or parsing metadata from {metadata_s3_key}: {e}")
+
+        original_settings_str = get_generation_settings_string(original_generation_instructions)
+        new_settings_str = get_generation_settings_string(new_generation_instructions)
 
         # 2. Fetch current Segments for the Session from AppSync
         if debug: print(f"Fetching segments for session ID: {session_id_from_request}")
@@ -311,6 +385,16 @@ Your task is to:
 - IMPORTANT: You MUST return the same number of segments as you were given in the 'Current Session Segments' list. Do not add or remove segments. Revise them in place, maintaining their original order.
 - Ensure your output is a single, valid JSON object.
 
+Original Generation Settings:
+<original_settings>
+{original_settings_str}
+</original_settings>
+
+User's New Generation Settings:
+<new_settings>
+{new_settings_str}
+</new_settings>
+
 Original Full Session Transcript:
 <transcript>
 {original_transcript_text}
@@ -328,11 +412,11 @@ User's Revision Requests:
 Output a single JSON object with two top-level keys: 'revised_tldr' (a string) and 'revised_sessionSegments' (a list of JSON objects). Each object in 'revised_sessionSegments' must have 'title' (string) and 'description' (string).
 Example of the required JSON output structure:
 {{
-  "revised_tldr": "The adventurers bravely faced the goblin horde and rescued the artifact.",
+  "revised_tldr": "The adventurers bravely faced the goblin horde and rescued the artifact...",
   "revised_sessionSegments": [
     {{
       "title": "Revised Ambush in the Woods",
-      "description": "The party was ambushed by goblins. Elara used her stealth, while Grom's mighty axe scattered them. They found a map on the goblin leader."
+      "description": "The party was ambushed by goblins. Elara used her stealth, while Grom's mighty axe scattered them. They found a map on the goblin leader..."
     }}
     // ... (ensure one object for each original segment, in the same order)
   ]
@@ -393,7 +477,7 @@ Example of the required JSON output structure:
                 "id": original_segment_data["id"],
                 "_version": original_segment_data["_version"], # Use the segment's own version
                 "title": revised_segment_content.title,
-                "description": [revised_segment_content.description] if revised_segment_content.description is not None else [],
+                "description": revised_segment_content.description if revised_segment_content.description is not None else "",
                 "index": original_segment_data.get("index") # Pass the original index back
             }
             # Remove index from input if it's None, in case the schema doesn't allow null for index on update

@@ -550,6 +550,101 @@ resource "aws_lambda_permission" "api_gateway_spend_credits_lambda" {
 }
 
 #################################
+# html-to-url endpoint
+#################################
+
+# API Gateway resource path ("/html-to-url")
+resource "aws_api_gateway_resource" "html_to_url_resource" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  parent_id   = aws_api_gateway_rest_api.summary_api.root_resource_id
+  path_part   = "html-to-url"
+}
+
+# API Gateway method (POST) with Cognito authorization
+resource "aws_api_gateway_method" "html_to_url_post" {
+  rest_api_id   = aws_api_gateway_rest_api.summary_api.id
+  resource_id   = aws_api_gateway_resource.html_to_url_resource.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito_authorizer.id
+}
+
+# Add OPTIONS method for CORS support
+resource "aws_api_gateway_method" "html_to_url_options" {
+  rest_api_id   = aws_api_gateway_rest_api.summary_api.id
+  resource_id   = aws_api_gateway_resource.html_to_url_resource.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+# API Gateway integration with Lambda
+resource "aws_api_gateway_integration" "html_to_url_lambda_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.summary_api.id
+  resource_id             = aws_api_gateway_resource.html_to_url_resource.id
+  http_method             = aws_api_gateway_method.html_to_url_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.html_to_url.invoke_arn
+}
+
+# OPTIONS method integration for CORS
+resource "aws_api_gateway_integration" "html_to_url_options_integration" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.html_to_url_resource.id
+  http_method = aws_api_gateway_method.html_to_url_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+# Method response for OPTIONS method
+resource "aws_api_gateway_method_response" "html_to_url_options_200" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.html_to_url_resource.id
+  http_method = aws_api_gateway_method.html_to_url_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true,
+    "method.response.header.Access-Control-Allow-Methods" = true,
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+# Integration response for OPTIONS method
+resource "aws_api_gateway_integration_response" "html_to_url_options_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.html_to_url_resource.id
+  http_method = aws_api_gateway_method.html_to_url_options.http_method
+  status_code = aws_api_gateway_method_response.html_to_url_options_200.status_code
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'",
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+
+  response_templates = {
+    "application/json" = ""
+  }
+
+  depends_on = [
+    aws_api_gateway_integration.html_to_url_options_integration
+  ]
+}
+
+# Allow API Gateway to invoke the html-to-url Lambda function
+resource "aws_lambda_permission" "api_gateway_html_to_url_lambda" {
+  statement_id  = "AllowExecutionFromAPIGateway_HtmlToUrl"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.html_to_url.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.summary_api.execution_arn}/*/${aws_api_gateway_method.html_to_url_post.http_method}${aws_api_gateway_resource.html_to_url_resource.path}"
+}
+
+#################################
 # API Gateway Deployment and Stage
 #################################
 
@@ -611,6 +706,15 @@ resource "aws_api_gateway_deployment" "summary_api_deployment" {
       aws_api_gateway_integration.spend_credits_options_integration.id,
       aws_api_gateway_method_response.spend_credits_options_200.id,
       aws_api_gateway_integration_response.spend_credits_options_integration_response.id,
+
+      # Html To Url Resources
+      aws_api_gateway_resource.html_to_url_resource.id,
+      aws_api_gateway_method.html_to_url_post.id,
+      aws_api_gateway_method.html_to_url_options.id,
+      aws_api_gateway_integration.html_to_url_lambda_integration.id,
+      aws_api_gateway_integration.html_to_url_options_integration.id,
+      aws_api_gateway_method_response.html_to_url_options_200.id,
+      aws_api_gateway_integration_response.html_to_url_options_integration_response.id,
     ]))
   }
 
@@ -665,4 +769,9 @@ output "stripe_webhook_api_url" {
 output "spend_credits_api_url" {
   value       = "${aws_api_gateway_stage.api_stage.invoke_url}${aws_api_gateway_resource.spend_credits_resource.path}"
   description = "URL for invoking the spend-credits endpoint"
+}
+
+output "html_to_url_api_url" {
+  value       = "${aws_api_gateway_stage.api_stage.invoke_url}${aws_api_gateway_resource.html_to_url_resource.path}"
+  description = "URL for invoking the html-to-url endpoint"
 }

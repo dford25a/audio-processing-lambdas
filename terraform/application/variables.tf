@@ -38,17 +38,24 @@ variable "stripe_webhook_secret" {
   sensitive   = true
 }
 
+variable "html_s3_bucket" {
+  description = "S3 bucket for storing public HTML files"
+  type        = string
+}
+
 locals {
   # Environment-specific configuration
   env_config = {
     prod = {
       s3_bucket       = "scribe8a8fcf3f6cb14734bce4bd48352f8043195641-dev" # Note: Your prod S3 bucket seems to have '-dev' in its name
       dynamodb_table  = "Session-ejphalvgizhdjbbzuj2vahx7ii-dev" # Note: Your prod DynamoDB table seems to have '-dev' in its name
+      html_s3_bucket  = "scribe-share-prod"
       function_suffix = "-prod"
     },
     dev = {
       s3_bucket       = "scribe8a8fcf3f6cb14734bce4bd48352f8043acdd4-devsort"  
       dynamodb_table  = "Session-ebn6wlprprdnvdmndj7wh7ddja-devsort"
+      html_s3_bucket  = "scribe-share-dev"
       function_suffix = "-dev"
     }
   }

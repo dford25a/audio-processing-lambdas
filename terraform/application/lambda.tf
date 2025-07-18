@@ -2,7 +2,7 @@
 locals {
   python_dependencies_layer_zip_path = "${path.module}/python_dependencies_layer.zip"
   stripe_layer_zip_path = "${path.module}/stripe_layer.zip"
-  
+  html_dependencies_layer_zip_path = "${path.module}/html_dependencies_layer.zip"
 }
 
 data "aws_ecr_repository" "segment_audio" {
@@ -32,6 +32,15 @@ resource "aws_lambda_layer_version" "stripe_layer" {
   description         = "Lambda Layer containing common Python dependencies (stripe)"
 }
 
+resource "aws_lambda_layer_version" "html_dependencies_layer" {
+  filename            = local.html_dependencies_layer_zip_path
+  source_code_hash    = filebase64sha256(local.html_dependencies_layer_zip_path)
+
+  layer_name          = "html-dependencies-layer-${var.environment}"
+  compatible_runtimes = ["python3.10", "python3.11"]
+  description         = "Lambda Layer containing HTML processing dependencies (BeautifulSoup)"
+}
+
 # Lambda function for start-summary-chain
 resource "aws_lambda_function" "start_summary_chain" {
   function_name = "start-summary-chain${local.config.function_suffix}"
@@ -50,11 +59,12 @@ resource "aws_lambda_function" "start_summary_chain" {
 
   environment {
     variables = {
-      BUCKET_NAME     = local.config.s3_bucket
-      ENVIRONMENT     = var.environment
-      DYNAMODB_TABLE  = local.config.dynamodb_table
-      APPSYNC_API_URL = var.appsync_api_url
-      APPSYNC_API_KEY = var.appsync_api_key
+      BUCKET_NAME       = local.config.s3_bucket
+      ENVIRONMENT       = var.environment
+      DYNAMODB_TABLE    = local.config.dynamodb_table
+      APPSYNC_API_URL   = var.appsync_api_url
+      APPSYNC_API_KEY   = var.appsync_api_key
+      STATE_MACHINE_ARN = aws_sfn_state_machine.audio_processing_state_machine.arn
     }
   }
 
@@ -63,6 +73,39 @@ resource "aws_lambda_function" "start_summary_chain" {
     aws_iam_role_policy_attachment.lambda_s3,
     aws_iam_role_policy_attachment.lambda_dynamodb,
     aws_iam_role_policy_attachment.lambda_invoke,
+    aws_iam_role_policy_attachment.lambda_appsync_attachment
+  ]
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+resource "aws_lambda_function" "refund_credits" {
+  function_name = "refund-credits${local.config.function_suffix}"
+  handler       = "app.lambda_handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 128
+
+  filename         = "${path.module}/refund-credits.zip"
+  source_code_hash = filebase64sha256("${path.module}/refund-credits.zip")
+
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      ENVIRONMENT     = var.environment
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_logs,
     aws_iam_role_policy_attachment.lambda_appsync_attachment
   ]
 
@@ -172,7 +215,7 @@ resource "aws_lambda_function" "final_summary" {
   handler       = "app.lambda_handler"
   role          = aws_iam_role.lambda_exec_role.arn
   runtime       = "python3.11"
-  timeout       = 300
+  timeout       = 500
   memory_size   = 512
 
   filename         = "${path.module}/final-summary.zip"
@@ -226,12 +269,13 @@ resource "aws_lambda_function" "revise_summary" {
 
   environment {
     variables = {
-      BUCKET_NAME     = local.config.s3_bucket
-      ENVIRONMENT     = var.environment
-      DYNAMODB_TABLE  = local.config.dynamodb_table
-      OPENAI_API_KEY  = var.openai_api_key
-      APPSYNC_API_URL = var.appsync_api_url
-      APPSYNC_API_KEY = var.appsync_api_key
+      BUCKET_NAME                 = local.config.s3_bucket
+      ENVIRONMENT                 = var.environment
+      DYNAMODB_TABLE              = local.config.dynamodb_table
+      OPENAI_API_KEY              = var.openai_api_key
+      APPSYNC_API_URL             = var.appsync_api_url
+      APPSYNC_API_KEY             = var.appsync_api_key
+      S3_SOURCE_TRANSCRIPT_PREFIX = "public/transcripts/summary"
     }
   }
 
@@ -308,7 +352,7 @@ resource "aws_lambda_function" "create_campaign_index" {
     variables = {
       BUCKET_NAME                = local.config.s3_bucket
       ENVIRONMENT                = var.environment
-      SOURCE_TRANSCRIPT_PREFIX   = "public/segmentedSummaries/"
+      SOURCE_TRANSCRIPT_PREFIX   = "public/transcripts/full/"
       INDEX_DESTINATION_PREFIX   = "private/campaign-indexes/"
     }
   }
@@ -349,8 +393,8 @@ resource "aws_lambda_function" "stripe_webhook" {
       ENVIRONMENT                = var.environment
       APPSYNC_API_URL            = var.appsync_api_url
       APPSYNC_API_KEY            = var.appsync_api_key
-      STRIPE_SECRET_KEY_NAME     = var.stripe_secret_key
-      STRIPE_WEBHOOK_SECRET_NAME = var.stripe_webhook_secret
+      STRIPE_SECRET_KEY          = var.stripe_secret_key
+      STRIPE_WEBHOOK_SECRET      = var.stripe_webhook_secret
     }
   }
 
@@ -385,11 +429,12 @@ resource "aws_lambda_function" "campaign_chat" {
 
   environment {
     variables = {
-      BUCKET_NAME           = local.config.s3_bucket
-      ENVIRONMENT           = var.environment
-      INDEX_SOURCE_PREFIX   = "private/campaign-indexes/"
-      APPSYNC_API_URL       = var.appsync_api_url
-      APPSYNC_API_KEY       = var.appsync_api_key
+    BUCKET_NAME           = local.config.s3_bucket
+    ENVIRONMENT           = var.environment
+    INDEX_SOURCE_PREFIX   = "private/campaign-indexes/"
+    APPSYNC_API_URL       = var.appsync_api_url
+    APPSYNC_API_KEY       = var.appsync_api_key
+    OPENAI_API_KEY        = var.openai_api_key
     }
   }
 
@@ -460,21 +505,6 @@ resource "aws_lambda_permission" "allow_bucket_to_call_combine_text" {
   source_account = data.aws_caller_identity.current.account_id
 }
 
-resource "aws_lambda_permission" "allow_sns_to_call_final_summary" {
-  statement_id  = "AllowSNSInvokeFinalSummary"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.final_summary.function_name
-  principal     = "sns.amazonaws.com"
-  source_arn    = aws_sns_topic.summary_events_topic.arn
-}
-
-resource "aws_lambda_permission" "allow_sns_to_call_indexing_lambda" {
-  statement_id  = "AllowSNSInvokeCampaignIndex"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.create_campaign_index.function_name
-  principal     = "sns.amazonaws.com"
-  source_arn    = aws_sns_topic.summary_events_topic.arn
-}
 
 # REMOVED: The problematic "renamed" permissions are no longer needed.
 # By removing them, Terraform will see they exist in the state but not in the code,
@@ -502,4 +532,35 @@ resource "aws_iam_policy" "bedrock_access_policy" {
 resource "aws_iam_role_policy_attachment" "lambda_bedrock_access" {
   role       = aws_iam_role.lambda_exec_role.name
   policy_arn = aws_iam_policy.bedrock_access_policy.arn
+}
+
+resource "aws_lambda_function" "html_to_url" {
+  function_name = "html-to-url${local.config.function_suffix}"
+  handler       = "app.handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 1024
+
+  filename         = "${path.module}/html-to-url.zip"
+  source_code_hash = filebase64sha256("${path.module}/html-to-url.zip")
+
+  layers = [
+    aws_lambda_layer_version.html_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      S3_BUCKET_NAME = local.config.html_s3_bucket
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_logs,
+    aws_iam_role_policy_attachment.lambda_s3
+  ]
+
+  tags = {
+    Environment = var.environment
+  }
 }

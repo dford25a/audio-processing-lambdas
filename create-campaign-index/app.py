@@ -14,7 +14,7 @@ import faiss  # Requires faiss-cpu to be in the Lambda Layer
 # It's recommended to retrieve these from environment variables for security and flexibility.
 S3_BUCKET_NAME = os.environ.get('BUCKET_NAME')
 AWS_REGION = os.environ.get('AWS_REGION', 'us-east-2')
-SOURCE_PREFIX = os.environ.get('SOURCE_TRANSCRIPT_PREFIX', 'public/segmentedSummaries/')
+SOURCE_PREFIX = os.environ.get('SOURCE_TRANSCRIPT_PREFIX', 'public/transcripts/full/')
 INDEX_DESTINATION_PREFIX = os.environ.get('INDEX_DESTINATION_PREFIX', 'private/campaign-indexes/')
 EMBEDDING_MODEL_ID = 'amazon.titan-embed-text-v2:0'
 
@@ -46,7 +46,7 @@ def get_ids_from_key(key: str) -> Tuple[Optional[str], Optional[str]]:
         return campaign_id, session_id
     return None, None
 
-def split_text_into_chunks(text: str, chunk_size: int = 400, chunk_overlap: int = 50) -> List[str]:
+def split_text_into_chunks(text: str, chunk_size: int = 400, chunk_overlap: int = 200) -> List[str]:
     """Splits a long text into overlapping chunks of words."""
     if not text:
         return []
@@ -108,21 +108,36 @@ def lambda_handler(event, context):
     if debug: print(f"Received raw event: {json.dumps(event)}")
 
     try:
-        # --- FIX: HANDLE BOTH SNS AND DIRECT S3 TRIGGERS ---
-        # Check if the event is from SNS.
-        if 'Sns' in event['Records'][0]:
+        # --- FIX: HANDLE STEP FUNCTION, SNS, AND S3 TRIGGERS ---
+        # 1. Step Function direct invocation (event has 'bucket' and 'key' at top level)
+        if 'bucket' in event and 'key' in event:
+            if debug: print("Event is from Step Function (direct invocation).")
+            bucket_name = event['bucket']
+            triggered_key = event['key']
+        # 1b. Step Function (new format: 'bucket' and 'combined_transcript' at top level)
+        elif 'bucket' in event and 'combined_transcript' in event and 'key' in event['combined_transcript']:
+            if debug: print("Event is from Step Function (combined_transcript format).")
+            bucket_name = event['bucket']
+            triggered_key = event['combined_transcript']['key']
+        # 2. SNS event
+        elif 'Records' in event and 'Sns' in event['Records'][0]:
             if debug: print("Event is from SNS. Parsing message...")
             sns_message_str = event['Records'][0]['Sns']['Message']
             s3_event = json.loads(sns_message_str)
             s3_record = s3_event['Records'][0]['s3']
-        # Otherwise, assume it's a direct S3 event.
-        else:
+            bucket_name = s3_record['bucket']['name']
+            triggered_key = s3_record['object']['key']
+        # 3. S3 event
+        elif 'Records' in event and 's3' in event['Records'][0]:
             if debug: print("Event is a direct S3 trigger.")
             s3_record = event['Records'][0]['s3']
+            bucket_name = s3_record['bucket']['name']
+            triggered_key = s3_record['object']['key']
+        else:
+            print("Event format not recognized. Aborting.")
+            return {'statusCode': 400, 'body': 'Event format not recognized.'}
         # --- END FIX ---
         
-        bucket_name = s3_record['bucket']['name']
-        triggered_key = s3_record['object']['key']
 
         if not triggered_key.startswith(SOURCE_PREFIX):
             if debug: print(f"Object {triggered_key} is not in the source prefix {SOURCE_PREFIX}. Skipping.")
@@ -137,8 +152,8 @@ def lambda_handler(event, context):
 
         all_chunks_with_source = []
         
-        directory_of_trigger_file = os.path.dirname(triggered_key)
-        campaign_transcript_prefix = f"{directory_of_trigger_file}/{campaign_id}"
+        # List all full transcript files for this campaign
+        campaign_transcript_prefix = f"{SOURCE_PREFIX}{campaign_id}"
         if debug: print(f"Constructed campaign listing prefix: {campaign_transcript_prefix}")
         
         paginator = s3_client.get_paginator('list_objects_v2')
@@ -205,7 +220,10 @@ def lambda_handler(event, context):
 
         return {
             'statusCode': 200, 
-            'body': json.dumps(f'Successfully created/updated index for campaign {campaign_id}')
+            'body': json.dumps(f'Successfully created/updated index for campaign {campaign_id}'),
+            'userTransactionsTransactionsId': event.get('userTransactionsTransactionsId'),
+            'sessionId': event.get('sessionId'),
+            'creditsToRefund': event.get('creditsToRefund')
         }
 
     except Exception as e:
@@ -213,5 +231,8 @@ def lambda_handler(event, context):
         traceback.print_exc()
         return {
             'statusCode': 500, 
-            'body': json.dumps({'error': f'An unexpected internal server error occurred: {str(e)}'})
+            'body': json.dumps({'error': f'An unexpected internal server error occurred: {str(e)}'}),
+            'userTransactionsTransactionsId': event.get('userTransactionsTransactionsId'),
+            'sessionId': event.get('sessionId'),
+            'creditsToRefund': event.get('creditsToRefund')
         }
