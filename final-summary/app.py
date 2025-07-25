@@ -719,6 +719,16 @@ def lambda_handler(event, context):
         
         if debug:
             print(f"Successfully fetched session via GetSession: {json.dumps(session_info)}")
+
+        # --- IDEMPOTENCY CHECK ---
+        # If the session is already processed, exit to prevent duplicates from retries.
+        current_status = session_info.get("transcriptionStatus")
+        if current_status in ["READ", "ERROR"]:
+            print(f"Session {session_info['id']} has status '{current_status}'. Halting execution to prevent duplicate processing.")
+            return {
+                'statusCode': 200,
+                'body': json.dumps(f"Session already processed with status: {current_status}. No action taken.")
+            }
         
         session_id = session_info["id"]
         # Use session's title for highlights, with a fallback name if title is missing

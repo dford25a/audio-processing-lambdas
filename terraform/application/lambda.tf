@@ -81,6 +81,39 @@ resource "aws_lambda_function" "start_summary_chain" {
   }
 }
 
+resource "aws_lambda_function" "init_credits" {
+  function_name = "init-credits${local.config.function_suffix}"
+  handler       = "app.lambda_handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 128
+
+  filename         = "${path.module}/init-credits.zip"
+  source_code_hash = filebase64sha256("${path.module}/init-credits.zip")
+
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      ENVIRONMENT     = var.environment
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_logs,
+    aws_iam_role_policy_attachment.lambda_appsync_attachment
+  ]
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
 resource "aws_lambda_function" "refund_credits" {
   function_name = "refund-credits${local.config.function_suffix}"
   handler       = "app.lambda_handler"
@@ -275,7 +308,7 @@ resource "aws_lambda_function" "revise_summary" {
       OPENAI_API_KEY              = var.openai_api_key
       APPSYNC_API_URL             = var.appsync_api_url
       APPSYNC_API_KEY             = var.appsync_api_key
-      S3_SOURCE_TRANSCRIPT_PREFIX = "public/transcripts/summary"
+      S3_SOURCE_TRANSCRIPT_PREFIX = "public/transcripts/full"
     }
   }
 

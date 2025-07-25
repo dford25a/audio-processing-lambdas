@@ -115,6 +115,8 @@
               "Type": "Task",
               "Resource": "${create_campaign_index_arn}",
               "Parameters": {
+                "bucket.$": "$.bucket",
+                "key.$": "$.combined_transcript.key",
                 "userTransactionsTransactionsId.$": "$.userTransactionsTransactionsId",
                 "sessionId.$": "$.sessionId",
                 "creditsToRefund.$": "$.creditsToRefund"

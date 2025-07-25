@@ -124,8 +124,8 @@ def load_index_from_s3(campaign_id: str) -> tuple:
         return cache[campaign_id]
 
     print(f"Loading index from S3 for campaign: {campaign_id}")
-    index_s3_key = f"{INDEX_SOURCE_PREFIX}campaign{campaign_id}.index"
-    mapping_s3_key = f"{INDEX_SOURCE_PREFIX}campaign{campaign_id}.json"
+    index_s3_key = f"{INDEX_SOURCE_PREFIX}{campaign_id}.index"
+    mapping_s3_key = f"{INDEX_SOURCE_PREFIX}{campaign_id}.json"
     local_index_path, local_mapping_path = f"/tmp/{campaign_id}.index", f"/tmp/{campaign_id}.json"
     
     try:

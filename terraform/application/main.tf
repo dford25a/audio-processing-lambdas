@@ -17,6 +17,10 @@ data "aws_dynamodb_table" "current_table" {
   name = local.config.dynamodb_table
 }
 
+data "aws_dynamodb_table" "user_transactions_table" {
+  name = local.config.user_transactions_table_name
+}
+
 # IAM Role for Lambda functions (shared role)
 resource "aws_iam_role" "lambda_exec_role" {
   name = "lambda_s3_dynamodb_appsync_role_${var.environment}" # Updated name to reflect AppSync
@@ -134,7 +138,9 @@ resource "aws_iam_policy" "lambda_dynamodb" {
         Effect   = "Allow"
         Resource = [
           data.aws_dynamodb_table.current_table.arn,
-          "${data.aws_dynamodb_table.current_table.arn}/index/*" # If you have GSIs
+          "${data.aws_dynamodb_table.current_table.arn}/index/*", # If you have GSIs
+          data.aws_dynamodb_table.user_transactions_table.arn,
+          "${data.aws_dynamodb_table.user_transactions_table.arn}/index/*"
         ]
       }
     ]
