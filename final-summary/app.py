@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Any, Union
 import base64 # For decoding image data
 import re # For slugifying titles for filenames
 import traceback # Added to be globally available
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- Third-party Library Imports ---
 import requests # For making HTTP requests to AppSync
@@ -600,6 +601,75 @@ def generate_and_upload_image(
         traceback.print_exc()
         return None
 
+# --- Parallel Image Generation Helper ---
+def generate_and_upload_images_parallel(
+    segments: List[SegmentElement],
+    s3_bucket: str,
+    s3_base_prefix: str,
+    session_id: str,
+    image_style_prompt: str,
+    image_quality: str,
+    img_enabled: bool = True,
+    debug: bool = False,
+    max_workers: int = 5
+) -> List[Optional[str]]:
+    """
+    Generates and uploads images for multiple segments in parallel.
+    Returns a list of S3 keys (or None for failed generations) in the same order as input segments.
+    """
+    if not img_enabled:
+        if debug:
+            print("Image generation disabled. Returning None for all segments.")
+        return [None] * len(segments)
+    
+    if not segments:
+        return []
+    
+    print(f"Starting parallel image generation for {len(segments)} segments using {max_workers} workers...")
+    
+    def generate_single_image(segment_data):
+        """Helper function for generating a single image"""
+        segment, segment_index = segment_data
+        return generate_and_upload_image(
+            prompt_suffix=segment.image_prompt,
+            s3_bucket=s3_bucket,
+            s3_base_prefix=s3_base_prefix,
+            session_id=session_id,
+            segment_index=segment_index,
+            image_style_prompt=image_style_prompt,
+            image_quality=image_quality,
+            debug=debug
+        )
+    
+    # Prepare data for parallel processing
+    segment_data_list = [(segment, idx) for idx, segment in enumerate(segments)]
+    results = [None] * len(segments)  # Initialize results list
+    
+    # Use ThreadPoolExecutor for parallel processing
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_index = {
+            executor.submit(generate_single_image, segment_data): idx 
+            for idx, segment_data in enumerate(segment_data_list)
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                result = future.result()
+                results[index] = result
+                if debug:
+                    print(f"Completed image generation for segment {index + 1}")
+            except Exception as e:
+                print(f"Error generating image for segment {index + 1}: {e}")
+                results[index] = None
+    
+    successful_generations = sum(1 for r in results if r is not None)
+    print(f"Parallel image generation completed: {successful_generations}/{len(segments)} successful")
+    
+    return results
+
 # --- Helper function to parse Session ID from filename stem ---
 def parse_session_id_from_stem(filename_stem: str) -> Optional[str]:
     """
@@ -951,21 +1021,31 @@ Example Output Structure (follow this JSON format precisely):
         processing_errors = []
         created_segments_count = 0
         
-        # Process Session Segments
-        print(f"Processing {len(summary_elements_response.sessionSegments)} session segments...")
-        first_segment_image_s3_key = None 
+        # Generate all images in parallel first to reduce overall runtime
+        print(f"Generating images for {len(summary_elements_response.sessionSegments)} session segments in parallel...")
+        segment_image_s3_keys = generate_and_upload_images_parallel(
+            segments=summary_elements_response.sessionSegments,
+            s3_bucket=s3_image_upload_bucket,
+            s3_base_prefix=s3_segment_image_prefix,
+            session_id=session_id,
+            image_style_prompt=img_style_prompt,
+            image_quality=img_quality,
+            img_enabled=img_enabled,
+            debug=debug,
+            max_workers=5  # Limit concurrent image generations to avoid rate limits
+        )
+        
+        # Set the first segment image for the session's primary image
+        first_segment_image_s3_key = segment_image_s3_keys[0] if segment_image_s3_keys else None
+        
+        # Process Session Segments with pre-generated images
+        print(f"Creating database entries for {len(summary_elements_response.sessionSegments)} session segments...")
         for idx, segment in enumerate(summary_elements_response.sessionSegments):
-            segment_image_s3_key_or_none = None
             try:
                 print(f"Processing session segment {idx + 1}/{len(summary_elements_response.sessionSegments)}: '{segment.title}'")
-                if img_enabled and segment.image_prompt:
-                    segment_image_s3_key_or_none = generate_and_upload_image(
-                        prompt_suffix=segment.image_prompt, s3_bucket=s3_image_upload_bucket,
-                        s3_base_prefix=s3_segment_image_prefix, session_id=session_id, segment_index=idx,
-                        image_style_prompt=img_style_prompt, image_quality=img_quality, debug=debug
-                    )
-                    if idx == 0 and segment_image_s3_key_or_none:
-                        first_segment_image_s3_key = segment_image_s3_key_or_none
+                
+                # Use the pre-generated image key
+                segment_image_s3_key_or_none = segment_image_s3_keys[idx] if idx < len(segment_image_s3_keys) else None
                 
                 create_segment_input = {
                     "sessionSegmentsId": session_id, "title": segment.title,
