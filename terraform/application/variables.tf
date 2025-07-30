@@ -49,11 +49,6 @@ variable "html_s3_bucket" {
   type        = string
 }
 
-variable "user_transactions_table_stream_arn" {
-  description = "The ARN of the UserTransactions DynamoDB table stream."
-  type        = string
-}
-
 locals {
   # Environment-specific configuration
   env_config = {

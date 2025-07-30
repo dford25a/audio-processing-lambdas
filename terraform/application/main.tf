@@ -148,29 +148,6 @@ resource "aws_iam_policy" "lambda_dynamodb" {
   })
 }
 
-# IAM Policy for Lambda to access DynamoDB Streams
-resource "aws_iam_policy" "lambda_dynamodb_streams" {
-  name        = "lambda_dynamodb_streams_access_${var.environment}"
-  description = "IAM policy for DynamoDB Streams access from Lambda"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = [
-          "dynamodb:DescribeStream",
-          "dynamodb:GetRecords",
-          "dynamodb:GetShardIterator",
-          "dynamodb:ListStreams"
-        ]
-        Effect   = "Allow"
-        Resource = [
-          var.user_transactions_table_stream_arn
-        ]
-      }
-    ]
-  })
-}
 
 # IAM Policy for Lambda to invoke other Lambda functions
 resource "aws_iam_policy" "lambda_invoke" {
@@ -243,10 +220,6 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamodb" {
   policy_arn = aws_iam_policy.lambda_dynamodb.arn
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_dynamodb_streams" {
-  role       = aws_iam_role.lambda_exec_role.name
-  policy_arn = aws_iam_policy.lambda_dynamodb_streams.arn
-}
 
 resource "aws_iam_role_policy_attachment" "lambda_invoke" {
   role       = aws_iam_role.lambda_exec_role.name

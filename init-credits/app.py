@@ -74,66 +74,82 @@ def get_user_transactions(user_transactions_id: str):
     response = execute_graphql_request(query, variables)
     return response.get("data", {}).get("getUserTransactions")
 
-def update_user_transactions(user_transactions_id: str, new_balance: float, version: int):
-    """Updates a user's credit balance."""
+def create_user_transactions(user_id: str, email: str, initial_balance: float):
+    """Creates a new user transactions record with initial credit balance."""
     mutation = """
-    mutation UpdateUserTransactions($input: UpdateUserTransactionsInput!) {
-      updateUserTransactions(input: $input) {
+    mutation CreateUserTransactions($input: CreateUserTransactionsInput!) {
+      createUserTransactions(input: $input) {
         id
+        email
         creditBalance
         _version
       }
     }
     """
-    variables = {"input": {"id": user_transactions_id, "creditBalance": new_balance, "_version": version}}
+    variables = {"input": {"id": user_id, "email": email, "creditBalance": initial_balance}}
     return execute_graphql_request(mutation, variables)
 
 # --- Main Lambda Handler ---
 def lambda_handler(event, context):
     """
-    AWS Lambda handler for adding credits, invoked by a DynamoDB stream.
+    AWS Lambda handler for adding credits, invoked by Cognito post-confirmation trigger.
     """
     print(f"💰 init-credits Lambda started. Event: {json.dumps(event)}")
 
     try:
+        # Cognito post-confirmation trigger event structure
+        user_pool_id = event.get('userPoolId')
+        user_name = event.get('userName')  # This is the user's unique ID
+        trigger_source = event.get('triggerSource')
+        
+        # Extract email from user attributes
+        user_attributes = event.get('request', {}).get('userAttributes', {})
+        email = user_attributes.get('email')
+        
+        # Only process post-confirmation events
+        if trigger_source != 'PostConfirmation_ConfirmSignUp':
+            print(f"⚠️ Ignoring trigger source: {trigger_source}")
+            return event  # Return the event unchanged for Cognito triggers
+        
+        if not user_name:
+            raise Exception("userName is missing from the Cognito event.")
+            
+        if not email:
+            raise Exception("email is missing from the Cognito event user attributes.")
+        
+        print(f"Processing post-confirmation for user: {user_name}, email: {email}")
+
         starting_credits_setting = get_system_setting("STARTING_CREDITS")
         if not starting_credits_setting:
             raise Exception("STARTING_CREDITS setting not found or is not active.")
         
         try:
-            credits_to_add = int(starting_credits_setting.get('settingValue'))
+            initial_credits = int(starting_credits_setting.get('settingValue'))
         except (ValueError, TypeError):
              raise Exception("Invalid value for STARTING_CREDITS setting.")
 
-        for record in event['Records']:
-            if record['eventName'] == 'INSERT':
-                new_image = record['dynamodb']['NewImage']
-                user_transactions_id = new_image.get('id', {}).get('S')
-                
-                if not user_transactions_id:
-                    print("[ERROR] userTransactionsTransactionsId is missing from the DynamoDB record.")
-                    continue
+        # Check if UserTransactions record already exists (idempotency check)
+        user_transactions_id = user_name
+        existing_user_tx = get_user_transactions(user_transactions_id)
+        
+        if existing_user_tx:
+            print(f"⚠️ User transaction record already exists for ID: {user_transactions_id}. Skipping creation to avoid duplicates.")
+            return event
 
-                print(f"Processing transaction for UserTransactionsID: {user_transactions_id}")
-
-                user_tx = get_user_transactions(user_transactions_id)
-                if not user_tx:
-                    raise Exception(f"User transaction record not found for ID: {user_transactions_id}")
-
-                current_balance = user_tx.get('creditBalance', 0)
-                new_balance = current_balance + credits_to_add
-
-                print(f"💾 Updating user balance from {current_balance} to {new_balance}...")
-                update_user_tx_response = update_user_transactions(user_transactions_id, new_balance, user_tx['_version'])
-                if "errors" in update_user_tx_response and update_user_tx_response["errors"]:
-                    raise Exception(f"Failed to update user balance: {update_user_tx_response['errors']}")
+        # Create new UserTransactions record with initial credits
+        print(f"💾 Creating new UserTransactions record with {initial_credits} credits...")
+        create_response = create_user_transactions(user_transactions_id, email, initial_credits)
+        if "errors" in create_response and create_response["errors"]:
+            raise Exception(f"Failed to create user transactions record: {create_response['errors']}")
 
         print("✅ init-credits completed successfully.")
-        return {'statusCode': 200, 'body': json.dumps('Successfully processed records.')}
+        # For Cognito triggers, always return the event
+        return event
 
     except Exception as e:
         import traceback
         print(f"❌ init-credits failed: {e}\n{traceback.format_exc()}")
-        # For DynamoDB streams, re-raising the exception is often the best way
-        # to handle failures, as it allows AWS to retry the batch.
-        raise e
+        # For Cognito triggers, we should still return the event to not break the user flow
+        # The user registration should succeed even if credit initialization fails
+        print("⚠️ Returning event despite failure to allow user registration to complete.")
+        return event

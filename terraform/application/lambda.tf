@@ -155,10 +155,10 @@ resource "aws_lambda_function" "segment_audio" {
   image_uri     = "${data.aws_ecr_repository.segment_audio.repository_url}:${var.environment}"
   
   timeout     = 600 
-  memory_size = 10240
+  memory_size = 8192  # Reduced from 10GB to 8GB - streaming approach uses less memory
   
   ephemeral_storage {
-    size = 5120
+    size = 3072  # Reduced from 5GB to 3GB - less temp storage needed
   }
 
   environment {
