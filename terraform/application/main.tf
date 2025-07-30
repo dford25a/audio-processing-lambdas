@@ -1,5 +1,6 @@
 provider "aws" {
-  region = "us-east-2" # As per your dev.tfvars and api_gateway.tf
+  profile = var.aws_profile
+  region  = "us-east-2" # As per your dev.tfvars and api_gateway.tf
 }
 
 # Data sources to get current AWS region and account ID
@@ -147,6 +148,30 @@ resource "aws_iam_policy" "lambda_dynamodb" {
   })
 }
 
+# IAM Policy for Lambda to access DynamoDB Streams
+resource "aws_iam_policy" "lambda_dynamodb_streams" {
+  name        = "lambda_dynamodb_streams_access_${var.environment}"
+  description = "IAM policy for DynamoDB Streams access from Lambda"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "dynamodb:DescribeStream",
+          "dynamodb:GetRecords",
+          "dynamodb:GetShardIterator",
+          "dynamodb:ListStreams"
+        ]
+        Effect   = "Allow"
+        Resource = [
+          var.user_transactions_table_stream_arn
+        ]
+      }
+    ]
+  })
+}
+
 # IAM Policy for Lambda to invoke other Lambda functions
 resource "aws_iam_policy" "lambda_invoke" {
   name        = "lambda_invoke_${var.environment}"
@@ -216,6 +241,11 @@ resource "aws_iam_role_policy_attachment" "lambda_s3" {
 resource "aws_iam_role_policy_attachment" "lambda_dynamodb" {
   role       = aws_iam_role.lambda_exec_role.name
   policy_arn = aws_iam_policy.lambda_dynamodb.arn
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_dynamodb_streams" {
+  role       = aws_iam_role.lambda_exec_role.name
+  policy_arn = aws_iam_policy.lambda_dynamodb_streams.arn
 }
 
 resource "aws_iam_role_policy_attachment" "lambda_invoke" {

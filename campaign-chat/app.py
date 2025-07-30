@@ -31,6 +31,7 @@ if not APPSYNC_API_KEY_FROM_ENV: raise ValueError("Environment variable APPSYNC_
 
 # --- AWS & AppSync CLIENTS ---
 s3_client = boto3.client('s3', region_name=AWS_REGION)
+lambda_client = boto3.client('lambda', region_name=AWS_REGION)
 bedrock_runtime = boto3.client(service_name='bedrock-runtime', region_name=AWS_REGION)
 openai_client = OpenAI(api_key=OPENAI_API_KEY_FROM_ENV)
 
@@ -95,17 +96,17 @@ def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = No
         print(f"Error making AppSync request: {e}")
         return {"errors": [{"message": f"RequestException: {e}"}]}
 
-def get_active_session_ids(campaign_id: str) -> List[str]:
+def get_active_session_ids(raw_campaign_id: str) -> List[str]:
     """Paginates through AppSync to get all non-deleted session IDs for a campaign."""
     active_ids = []
     next_token = None
     while True:
-        variables = {"campaignId": campaign_id, "limit": 100, "nextToken": next_token}
+        variables = {"campaignId": raw_campaign_id, "limit": 100, "nextToken": next_token}
         response = execute_graphql_request(LIST_ACTIVE_SESSIONS_QUERY, variables)
         
         data = response.get("data", {}).get("listSessions", {})
         if not data or response.get("errors"):
-            print("Failed to fetch sessions from AppSync or received an error.")
+            print(f"Failed to fetch sessions from AppSync for campaign '{raw_campaign_id}'.")
             break
             
         items = data.get("items", [])
@@ -115,32 +116,120 @@ def get_active_session_ids(campaign_id: str) -> List[str]:
         next_token = data.get("nextToken")
         if not next_token:
             break
-    print(f"Found {len(active_ids)} active sessions for campaign {campaign_id}.")
+            
+    print(f"Found {len(active_ids)} active sessions for campaign {raw_campaign_id}.")
     return active_ids
 
-def load_index_from_s3(campaign_id: str) -> tuple:
-    if campaign_id in cache:
-        print(f"Using cached index for campaign: {campaign_id}")
-        return cache[campaign_id]
+def load_index_from_s3(prefixed_campaign_id: str, raw_campaign_id: str, is_retry: bool = False) -> tuple:
+    """
+    Loads a FAISS index and its mapping file from S3 for a given campaign ID.
+    If the index is not found, it triggers a Lambda to create it and then retries.
+    """
+    if prefixed_campaign_id in cache:
+        print(f"Using cached index for campaign: {prefixed_campaign_id}")
+        return cache[prefixed_campaign_id]
 
-    print(f"Loading index from S3 for campaign: {campaign_id}")
-    index_s3_key = f"{INDEX_SOURCE_PREFIX}{campaign_id}.index"
-    mapping_s3_key = f"{INDEX_SOURCE_PREFIX}{campaign_id}.json"
-    local_index_path, local_mapping_path = f"/tmp/{campaign_id}.index", f"/tmp/{campaign_id}.json"
-    
+    print(f"Loading index from S3 for campaign: {prefixed_campaign_id}")
+    index_s3_key = f"{INDEX_SOURCE_PREFIX}{prefixed_campaign_id}.index"
+    mapping_s3_key = f"{INDEX_SOURCE_PREFIX}{prefixed_campaign_id}.json"
+    local_index_path = f"/tmp/{prefixed_campaign_id}.index"
+    local_mapping_path = f"/tmp/{prefixed_campaign_id}.json"
+
     try:
+        # HeadObject is a lighter-weight way to check for existence.
+        s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=index_s3_key)
+        s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=mapping_s3_key)
+
+        # If checks pass, download the files.
         s3_client.download_file(S3_BUCKET_NAME, index_s3_key, local_index_path)
         s3_client.download_file(S3_BUCKET_NAME, mapping_s3_key, local_mapping_path)
+        
         index = faiss.read_index(local_index_path)
         with open(local_mapping_path, 'r') as f:
             mapping = json.load(f)
-        cache[campaign_id] = (index, mapping)
+        
+        cache[prefixed_campaign_id] = (index, mapping)
         return index, mapping
-    except s3_client.exceptions.NoSuchKey:
-        print(f"Index or mapping file not found for campaign {campaign_id}")
-        return None, None
+
+    except s3_client.exceptions.ClientError as e:
+        if e.response['Error']['Code'] == '404' and not is_retry:
+            print(f"Index not found for campaign {prefixed_campaign_id}. Triggering index creation.")
+            
+            # This payload needs to simulate the S3 event that the create-index Lambda expects.
+            # We need a key that the function can parse to get the campaign_id.
+            # A common pattern is to use the first available transcript file for that campaign.
+            
+            # Find the first transcript for the campaign to use as a trigger object.
+            # This is more robust than just listing by prefix, as it respects the actual session IDs.
+            active_sessions = get_active_session_ids(raw_campaign_id)
+            if not active_sessions:
+                print(f"No active sessions found for campaign {raw_campaign_id} via AppSync. Cannot create index.")
+                return None, None
+
+            trigger_key = None
+            
+            # --- NEW: Search in primary and then legacy locations ---
+            search_locations = [
+                "public/transcripts/full/",
+                "public/segmentedSummaries/"
+            ]
+
+            for session_id in active_sessions:
+                normalized_session_id = session_id.replace("Session", "")
+                
+                for location in search_locations:
+                    # Construct the full prefix to search for
+                    # Pattern: {location}campaign{UUID}Session{UUID}.txt
+                    potential_key_prefix = f"{location}{prefixed_campaign_id}Session{normalized_session_id}"
+                    
+                    response = s3_client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=potential_key_prefix, MaxKeys=1)
+                    
+                    if 'Contents' in response and response['Contents']:
+                        trigger_key = response['Contents'][0]['Key']
+                        print(f"Found valid transcript key in '{location}' to trigger indexing: {trigger_key}")
+                        break  # Exit the inner loop (locations)
+                
+                if trigger_key:
+                    break # Exit the outer loop (sessions)
+
+            if not trigger_key:
+                print(f"No transcript files found for any active sessions of campaign {raw_campaign_id} in any known location. Cannot create index.")
+                return None, None
+            
+            print(f"Using key '{trigger_key}' to trigger index creation.")
+
+            payload = {
+                "Records": [{
+                    "s3": {
+                        "bucket": {"name": S3_BUCKET_NAME},
+                        "object": {"key": trigger_key}
+                    }
+                }]
+            }
+            
+            try:
+                # Get environment from environment variable to construct correct function name
+                environment = os.environ.get('ENVIRONMENT', 'dev')
+                function_name = f'create-campaign-index-{environment}'
+                
+                lambda_client.invoke(
+                    FunctionName=function_name,
+                    InvocationType='Event',  # Asynchronous invocation
+                    Payload=json.dumps(payload)
+                )
+                print(f"Successfully invoked {function_name} Lambda.")
+                return None, None # Immediate fail after triggering
+
+            except Exception as invoke_error:
+                print(f"Failed to invoke {function_name} Lambda: {invoke_error}")
+                return None, None
+        else:
+            # Handle other S3 errors or the case where we've already retried.
+            print(f"Error loading index from S3: {e}")
+            return None, None
+            
     except Exception as e:
-        print(f"Error loading index from S3: {e}")
+        print(f"An unexpected error occurred in load_index_from_s3: {e}")
         return None, None
 
 def get_embedding_for_query(query_text: str) -> np.ndarray:
@@ -178,12 +267,17 @@ def lambda_handler(event, context):
     
     try:
         body = json.loads(event['body'])
-        campaign_id = body.get('campaignId')
-        # The incoming messages from the client
+        raw_campaign_id = body.get('campaignId')
         original_messages = body.get('messages')
 
-        if not campaign_id or not original_messages or not isinstance(original_messages, list):
+        if not raw_campaign_id or not original_messages or not isinstance(original_messages, list):
             return {'statusCode': 400, 'headers': {'Access-Control-Allow-Origin': '*'}, 'body': json.dumps({'error': 'Missing or invalid fields'})}
+
+        # --- STANDARDIZE IDs ---
+        # S3 paths use a prefixed ID, while AppSync uses the raw UUID.
+        # Create clear variables to use throughout the handler.
+        prefixed_campaign_id = f"campaign{raw_campaign_id}" if not raw_campaign_id.startswith('campaign') else raw_campaign_id
+        raw_campaign_id = raw_campaign_id.replace("campaign", "") # Ensure raw_id is always raw
 
         # --- START: NEW AND IMPROVED MESSAGE PARSING ---
         # This comprehension iterates through your original messages and rebuilds them
@@ -207,18 +301,24 @@ def lambda_handler(event, context):
              return {'statusCode': 400, 'headers': {'Access-Control-Allow-Origin': '*'}, 'body': json.dumps({'error': 'Message list is empty or invalid format after parsing.'})}
 
         # 1. **NEW**: Get a list of all active (not deleted) session IDs for this campaign.
-        active_session_ids = get_active_session_ids(campaign_id)
+        active_session_ids = get_active_session_ids(raw_campaign_id)
         if not active_session_ids:
-             return {'statusCode': 404, 'headers': {'Access-Control-Allow-Origin': '*'}, 'body': json.dumps({'error': f'No active sessions found for campaign {campaign_id}.'})}
+             return {'statusCode': 404, 'headers': {'Access-Control-Allow-Origin': '*'}, 'body': json.dumps({'error': f'No active sessions found for campaign {raw_campaign_id}.'})}
         # Normalize session IDs by stripping "Session" prefix if present
         def normalize_session_id(sid):
             return sid[len("Session"):] if isinstance(sid, str) and sid.startswith("Session") else sid
         active_session_ids_set = set(normalize_session_id(sid) for sid in active_session_ids)
 
         # 2. Load FAISS index and mapping from S3
-        index, mapping = load_index_from_s3(campaign_id)
+        index, mapping = load_index_from_s3(prefixed_campaign_id, raw_campaign_id)
         if index is None:
-            return {'statusCode': 404, 'headers': {'Access-Control-Allow-Origin': '*'}, 'body': json.dumps({'error': f'No index found for campaign {campaign_id}.'})}
+            # The load_index_from_s3 function now handles the logic of attempting to create an index.
+            # If it returns None, it means either the index wasn't found and an async creation was triggered,
+            # or there were no transcripts to create an index from. In either case, we should inform the user.
+            error_message = (f"We couldn't find an index for campaign {raw_campaign_id}. "
+                             "We've started building one, which may take a few minutes. "
+                             "Please try your request again shortly.")
+            return {'statusCode': 404, 'headers': {'Access-Control-Allow-Origin': '*'}, 'body': json.dumps({'error': error_message})}
 
         # 3. Embed the latest user query
         latest_query = user_chat_messages[-1]['content']

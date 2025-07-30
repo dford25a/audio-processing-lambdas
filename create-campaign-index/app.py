@@ -31,19 +31,21 @@ bedrock_runtime = boto3.client(service_name='bedrock-runtime', region_name=AWS_R
 
 def get_ids_from_key(key: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Extracts campaign and session IDs from the S3 object key using regex.
-    Example key format: '.../campaignUUIDSessionUUID.txt'
+    Extracts campaign and session IDs from the S3 object key using a more robust regex.
+    This version finds the UUIDs associated with 'campaign' and 'session' prefixes independently.
+    Example key format: '.../campaignUUID...SessionUUID.txt' or other variations.
     Returns: A tuple containing (campaign_id, session_id).
     """
-    # Regex to find 'campaign' followed by a UUID and 'Session' followed by a UUID.
-    match = re.search(r'campaign([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})Session([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})', key)
-    if match:
-        campaign_uuid = match.group(1)
-        session_uuid = match.group(2)
-        # Reconstruct the full IDs as they might appear elsewhere.
-        campaign_id = f"campaign{campaign_uuid}"
-        session_id = f"Session{session_uuid}"
+    campaign_match = re.search(r'campaign([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})', key)
+    session_match = re.search(r'Session([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})', key)
+
+    campaign_id = f"campaign{campaign_match.group(1)}" if campaign_match else None
+    session_id = f"Session{session_match.group(1)}" if session_match else None
+
+    # If we found at least one ID, we can proceed.
+    if campaign_id or session_id:
         return campaign_id, session_id
+    
     return None, None
 
 def split_text_into_chunks(text: str, chunk_size: int = 400, chunk_overlap: int = 200) -> List[str]:
@@ -152,34 +154,40 @@ def lambda_handler(event, context):
 
         all_chunks_with_source = []
         
-        # List all full transcript files for this campaign
-        campaign_transcript_prefix = f"{SOURCE_PREFIX}{campaign_id}"
-        if debug: print(f"Constructed campaign listing prefix: {campaign_transcript_prefix}")
+        # List all full transcript files for this campaign from both current and legacy locations
+        search_locations = [
+            SOURCE_PREFIX,  # Current location: 'public/transcripts/full/'
+            'public/segmentedSummaries/'  # Legacy location
+        ]
         
-        paginator = s3_client.get_paginator('list_objects_v2')
-        pages = paginator.paginate(Bucket=bucket_name, Prefix=campaign_transcript_prefix)
+        for location in search_locations:
+            campaign_transcript_prefix = f"{location}{campaign_id}"
+            if debug: print(f"Searching in location '{location}' with prefix: {campaign_transcript_prefix}")
+            
+            paginator = s3_client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=bucket_name, Prefix=campaign_transcript_prefix)
 
-        for page in pages:
-            for obj in page.get('Contents', []):
-                transcript_key = obj['Key']
-                _, transcript_session_id = get_ids_from_key(transcript_key)
-                if not transcript_session_id:
-                    print(f"Skipping file, could not parse session ID from key: {transcript_key}")
-                    continue
+            for page in pages:
+                for obj in page.get('Contents', []):
+                    transcript_key = obj['Key']
+                    _, transcript_session_id = get_ids_from_key(transcript_key)
+                    if not transcript_session_id:
+                        print(f"Skipping file, could not parse session ID from key: {transcript_key}")
+                        continue
 
-                if debug: print(f"Reading transcript: {transcript_key} for Session ID: {transcript_session_id}")
-                
-                s3_object = s3_client.get_object(Bucket=bucket_name, Key=transcript_key)
-                transcript_text = s3_object['Body'].read().decode('utf-8')
-                
-                chunks = split_text_into_chunks(transcript_text)
-                
-                for chunk_text in chunks:
-                    all_chunks_with_source.append({
-                        "source_file": transcript_key,
-                        "session_id": transcript_session_id,
-                        "text": chunk_text
-                    })
+                    if debug: print(f"Reading transcript from '{location}': {transcript_key} for Session ID: {transcript_session_id}")
+                    
+                    s3_object = s3_client.get_object(Bucket=bucket_name, Key=transcript_key)
+                    transcript_text = s3_object['Body'].read().decode('utf-8')
+                    
+                    chunks = split_text_into_chunks(transcript_text)
+                    
+                    for chunk_text in chunks:
+                        all_chunks_with_source.append({
+                            "source_file": transcript_key,
+                            "session_id": transcript_session_id,
+                            "text": chunk_text
+                        })
 
         if not all_chunks_with_source:
             print(f"No text chunks found for campaign {campaign_id}. Nothing to index.")

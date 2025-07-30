@@ -3,6 +3,12 @@ variable "environment" {
   type        = string
 }
 
+variable "aws_profile" {
+  description = "AWS profile to use for deployment"
+  type        = string
+  default     = "floma"
+}
+
 variable "openai_api_key" {
   description = "OpenAI API key"
   type        = string

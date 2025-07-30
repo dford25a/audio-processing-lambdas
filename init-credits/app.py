@@ -42,7 +42,7 @@ def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = No
 def get_system_setting(setting_key: str):
     """Fetches a system setting by its key."""
     query = """
-    query GetSystemSettingByKey($settingKey: String!, $filter: ModelSystemSettingFilterInput) {
+    query GetSystemSettingByKey($settingKey: String!, $filter: ModelSystemSettingsFilterInput) {
       getSystemSettingByKey(settingKey: $settingKey, filter: $filter) {
         items {
           id
