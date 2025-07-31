@@ -14,6 +14,14 @@ resource "aws_lambda_permission" "cognito_invoke_init_credits" {
   source_arn    = data.aws_cognito_user_pool.existing.arn
 }
 
+resource "aws_lambda_permission" "cognito_invoke_post_confirmation" {
+  statement_id  = "AllowExecutionFromCognitoPostConfirmation"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.post_cognito_confirmation.function_name
+  principal     = "cognito-idp.amazonaws.com"
+  source_arn    = data.aws_cognito_user_pool.existing.arn
+}
+
 # Configure the Lambda trigger on the existing User Pool using AWS CLI
 resource "null_resource" "configure_cognito_trigger" {
   # This will run whenever the Lambda function changes
@@ -28,5 +36,21 @@ resource "null_resource" "configure_cognito_trigger" {
   depends_on = [
     aws_lambda_function.init_credits,
     aws_lambda_permission.cognito_invoke_init_credits
+  ]
+}
+
+resource "null_resource" "configure_cognito_post_confirmation_trigger" {
+  # This will run whenever the Lambda function changes
+  triggers = {
+    lambda_function_arn = aws_lambda_function.post_cognito_confirmation.arn
+  }
+
+  provisioner "local-exec" {
+    command = "echo 'MANUAL STEP REQUIRED: Add post-confirmation Lambda trigger to Cognito User Pool ${data.aws_cognito_user_pool.existing.id} with Lambda ARN: ${aws_lambda_function.post_cognito_confirmation.arn}'"
+  }
+
+  depends_on = [
+    aws_lambda_function.post_cognito_confirmation,
+    aws_lambda_permission.cognito_invoke_post_confirmation
   ]
 }

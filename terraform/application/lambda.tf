@@ -3,6 +3,7 @@ locals {
   python_dependencies_layer_zip_path = "${path.module}/python_dependencies_layer.zip"
   stripe_layer_zip_path = "${path.module}/stripe_layer.zip"
   html_dependencies_layer_zip_path = "${path.module}/html_dependencies_layer.zip"
+  brevo_dependencies_layer_zip_path = "${path.module}/brevo_dependencies_layer.zip"
 }
 
 data "aws_ecr_repository" "segment_audio" {
@@ -41,6 +42,15 @@ resource "aws_lambda_layer_version" "html_dependencies_layer" {
   description         = "Lambda Layer containing HTML processing dependencies (BeautifulSoup)"
 }
 
+resource "aws_lambda_layer_version" "brevo_dependencies_layer" {
+  filename            = local.brevo_dependencies_layer_zip_path
+  source_code_hash    = filebase64sha256(local.brevo_dependencies_layer_zip_path)
+
+  layer_name          = "brevo-dependencies-layer-${var.environment}"
+  compatible_runtimes = ["python3.10", "python3.11"]
+  description         = "Lambda Layer containing Brevo API dependencies"
+}
+
 # Lambda function for start-summary-chain
 resource "aws_lambda_function" "start_summary_chain" {
   function_name = "start-summary-chain${local.config.function_suffix}"
@@ -68,13 +78,31 @@ resource "aws_lambda_function" "start_summary_chain" {
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_s3,
-    aws_iam_role_policy_attachment.lambda_dynamodb,
-    aws_iam_role_policy_attachment.lambda_invoke,
-    aws_iam_role_policy_attachment.lambda_appsync_attachment
+  tags = {
+    Environment = var.environment
+  }
+}
+
+resource "aws_lambda_function" "post_cognito_confirmation" {
+  function_name = "post-cognito-confirmation${local.config.function_suffix}"
+  handler       = "app.handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 128
+
+  filename         = "${path.module}/post-cognito-confirmation.zip"
+  source_code_hash = filebase64sha256("${path.module}/post-cognito-confirmation.zip")
+
+  layers = [
+    aws_lambda_layer_version.brevo_dependencies_layer.arn
   ]
+
+  environment {
+    variables = {
+      BREVO_API_KEY = var.brevo_api_key
+    }
+  }
 
   tags = {
     Environment = var.environment
@@ -104,11 +132,6 @@ resource "aws_lambda_function" "init_credits" {
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_appsync_attachment
-  ]
-
   tags = {
     Environment = var.environment
   }
@@ -137,11 +160,6 @@ resource "aws_lambda_function" "refund_credits" {
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_appsync_attachment
-  ]
-
   tags = {
     Environment = var.environment
   }
@@ -169,12 +187,6 @@ resource "aws_lambda_function" "segment_audio" {
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_s3,
-    aws_iam_role_policy_attachment.lambda_dynamodb
-  ]
-  
   tags = {
     Environment = var.environment
   }
@@ -202,12 +214,6 @@ resource "aws_lambda_function" "transcribe" {
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_s3,
-    aws_iam_role_policy_attachment.lambda_dynamodb
-  ]
-  
   tags = {
     Environment = var.environment
   }
@@ -232,11 +238,6 @@ resource "aws_lambda_function" "combine_text_segments" {
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_s3
-  ]
-  
   tags = {
     Environment = var.environment
   }
@@ -273,12 +274,6 @@ resource "aws_lambda_function" "final_summary" {
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_s3,
-    aws_iam_role_policy_attachment.lambda_appsync_attachment
-  ]
-
   tags = {
     Environment = var.environment
   }
@@ -312,13 +307,6 @@ resource "aws_lambda_function" "revise_summary" {
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_s3,
-    aws_iam_role_policy_attachment.lambda_dynamodb,
-    aws_iam_role_policy_attachment.lambda_appsync_attachment
-  ]
-
   tags = {
     Environment = var.environment
   }
@@ -351,13 +339,6 @@ resource "aws_lambda_function" "session_chat" {
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_s3,
-    aws_iam_role_policy_attachment.lambda_dynamodb,
-    aws_iam_role_policy_attachment.lambda_appsync_attachment
-  ]
-
   tags = {
     Environment = var.environment
   }
@@ -389,12 +370,6 @@ resource "aws_lambda_function" "create_campaign_index" {
       INDEX_DESTINATION_PREFIX   = "private/campaign-indexes/"
     }
   }
-
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_s3,
-    aws_iam_role_policy_attachment.lambda_bedrock_access 
-  ]
 
   tags = {
     Environment = var.environment
@@ -431,12 +406,6 @@ resource "aws_lambda_function" "stripe_webhook" {
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_appsync_attachment,
-    aws_iam_role_policy_attachment.lambda_ssm_access # Dependency on the new SSM policy
-  ]
-
   tags = {
     Environment = var.environment
   }
@@ -471,13 +440,6 @@ resource "aws_lambda_function" "campaign_chat" {
     }
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_s3,
-    aws_iam_role_policy_attachment.lambda_bedrock_access,
-    aws_iam_role_policy_attachment.lambda_appsync_attachment
-  ]
-
   tags = {
     Environment = var.environment
   }
@@ -510,11 +472,6 @@ resource "aws_lambda_function" "spend_credits" {
   }
 
   # The existing IAM role already has AppSync and CloudWatch Logs permissions
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_appsync_attachment
-  ]
-
   tags = {
     Environment = var.environment
   }
@@ -587,11 +544,6 @@ resource "aws_lambda_function" "html_to_url" {
       S3_BUCKET_NAME = local.config.html_s3_bucket
     }
   }
-
-  depends_on = [
-    aws_iam_role_policy_attachment.lambda_logs,
-    aws_iam_role_policy_attachment.lambda_s3
-  ]
 
   tags = {
     Environment = var.environment

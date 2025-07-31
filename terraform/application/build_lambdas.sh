@@ -26,6 +26,8 @@ DEFAULT_LAMBDAS=(
   "spend-credits"
   "refund-credits"
   "html-to-url"
+  "post-cognito-confirmation"
+  "error-notifier"
 )
 
 BUILD_DIR="build" # Temporary build directory within terraform/application/

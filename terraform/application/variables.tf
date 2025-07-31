@@ -49,6 +49,12 @@ variable "html_s3_bucket" {
   type        = string
 }
 
+variable "brevo_api_key" {
+  description = "Brevo API key"
+  type        = string
+  sensitive   = true
+}
+
 locals {
   # Environment-specific configuration
   env_config = {

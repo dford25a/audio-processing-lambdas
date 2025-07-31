@@ -74,7 +74,7 @@ def get_user_transactions(user_transactions_id: str):
     response = execute_graphql_request(query, variables)
     return response.get("data", {}).get("getUserTransactions")
 
-def create_user_transactions(user_id: str, email: str, initial_balance: float):
+def create_user_transactions(user_id: str, email: str, initial_balance: float, owner: str):
     """Creates a new user transactions record with initial credit balance."""
     mutation = """
     mutation CreateUserTransactions($input: CreateUserTransactionsInput!) {
@@ -82,11 +82,12 @@ def create_user_transactions(user_id: str, email: str, initial_balance: float):
         id
         email
         creditBalance
+        owner
         _version
       }
     }
     """
-    variables = {"input": {"id": user_id, "email": email, "creditBalance": initial_balance}}
+    variables = {"input": {"id": user_id, "email": email, "creditBalance": initial_balance, "owner": owner}}
     return execute_graphql_request(mutation, variables)
 
 # --- Main Lambda Handler ---
@@ -102,22 +103,23 @@ def lambda_handler(event, context):
         user_name = event.get('userName')  # This is the user's unique ID
         trigger_source = event.get('triggerSource')
         
-        # Extract email from user attributes
+        # Extract email and user ID from user attributes
         user_attributes = event.get('request', {}).get('userAttributes', {})
         email = user_attributes.get('email')
+        user_id = user_attributes.get('sub')  # The actual UUID for the user
         
         # Only process post-confirmation events
         if trigger_source != 'PostConfirmation_ConfirmSignUp':
             print(f"⚠️ Ignoring trigger source: {trigger_source}")
             return event  # Return the event unchanged for Cognito triggers
         
-        if not user_name:
-            raise Exception("userName is missing from the Cognito event.")
+        if not user_id:
+            raise Exception("sub (user ID) is missing from the Cognito event user attributes.")
             
         if not email:
             raise Exception("email is missing from the Cognito event user attributes.")
         
-        print(f"Processing post-confirmation for user: {user_name}, email: {email}")
+        print(f"Processing post-confirmation for user: {user_name} (ID: {user_id}), email: {email}")
 
         starting_credits_setting = get_system_setting("STARTING_CREDITS")
         if not starting_credits_setting:
@@ -129,16 +131,19 @@ def lambda_handler(event, context):
              raise Exception("Invalid value for STARTING_CREDITS setting.")
 
         # Check if UserTransactions record already exists (idempotency check)
-        user_transactions_id = user_name
+        user_transactions_id = user_id  # Use the actual user UUID, not the username
         existing_user_tx = get_user_transactions(user_transactions_id)
         
         if existing_user_tx:
             print(f"⚠️ User transaction record already exists for ID: {user_transactions_id}. Skipping creation to avoid duplicates.")
             return event
 
+        # Create owner field in format UUID:username
+        owner = f"{user_id}:{user_name}"
+        
         # Create new UserTransactions record with initial credits
         print(f"💾 Creating new UserTransactions record with {initial_credits} credits...")
-        create_response = create_user_transactions(user_transactions_id, email, initial_credits)
+        create_response = create_user_transactions(user_transactions_id, email, initial_credits, owner)
         if "errors" in create_response and create_response["errors"]:
             raise Exception(f"Failed to create user transactions record: {create_response['errors']}")
 

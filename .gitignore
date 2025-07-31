@@ -20,6 +20,41 @@ terraform/shared/terraform.tfstate.backup
 segment-audio-container/ffmpeg-7.0.2-amd64-static/
 segment-audio-container/ffmpeg-release-amd64-static.tar.xz
 
+# Python dependencies and cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Error-notifier Python dependencies (should be installed via requirements.txt)
+error-notifier/bin/
+error-notifier/certifi/
+error-notifier/certifi-*/
+error-notifier/charset_normalizer/
+error-notifier/charset_normalizer-*/
+error-notifier/idna/
+error-notifier/idna-*/
+error-notifier/requests/
+error-notifier/requests-*/
+error-notifier/urllib3/
+error-notifier/urllib3-*/
+
 # Other specific files
 default_state.json
 import_files.sh
