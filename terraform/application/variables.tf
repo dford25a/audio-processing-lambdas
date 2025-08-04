@@ -55,6 +55,12 @@ variable "brevo_api_key" {
   sensitive   = true
 }
 
+variable "discord_webhook_url" {
+  description = "Discord webhook URL for notifications"
+  type        = string
+  sensitive   = true
+}
+
 locals {
   # Environment-specific configuration
   env_config = {

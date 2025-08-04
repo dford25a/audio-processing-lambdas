@@ -64,7 +64,7 @@ resource "aws_lambda_function" "error_notifier" {
 
   environment {
     variables = {
-      DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1400496352105857064/NE3k-euRTeHcnkQwLQlQGqHjFPd0izQYRulCNIMsgsgYXlqyL8cYYcx24r7HfJBJa4_X"
+      DISCORD_WEBHOOK_URL = var.discord_webhook_url
       SENDER_EMAIL_ADDRESS = aws_ses_email_identity.error_email.email
     }
   }
