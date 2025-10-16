@@ -67,17 +67,17 @@ image_format_lookup = {
     "fantasy": {
         "name": "Default",
         "description": "Classic artistic style",
-        "longDescription": "A fantasy style painting with classic, imaginative elements. Often features magical creatures, dramatic lighting, and mythic scenery."
+        "longDescription": "A semi-photorealistic fantasy style with bold, directional lighting, rich color saturation, and cinematic composition. Realistic textures, lifelike character detail, and a polished finish create a grounded yet visually striking world with a heightened sense of drama and scale."
     },
     "dark-fantasy": {
         "name": "Dark fantasy",
         "description": "Dark fantasy style",
-        "longDescription": "A moody, detailed style with deep shadows, muted colors, and selective highlights for an ominous atmosphere."
+        "longDescription": "A cinematic stylized realism with rich color depth and dynamic lighting. The palette uses vibrant yet grounded tones with strong value contrast to enhance atmosphere and emotional impact, while preserving detail in shadow and highlight areas. Lighting is volumetric and directional, often cutting through mist, smoke, or haze to reveal depth and form. The overall aesthetic is dark and serious in tone — evoking tension, mystery, and scale — yet maintains enough visibility and texture for every element to feel tangible and alive. The mood is dramatic, immersive, and painterly, blending realistic detail with heightened color and light expression."
     },
     "watercolor": {
         "name": "Watercolor",
-        "description": "Watercolor style",
-        "longDescription": "A soft, dreamy style with loose brushstrokes, translucent colors, and organic edges."
+        "description": "detailed watercolor style",
+        "longDescription": "A refined watercolor style that preserves the medium’s softness and translucency while enhancing structure and depth. Colors remain fluid and luminous, but with richer pigment, sharper contrast, and defined brush textures that retain fine detail without losing the organic, hand-painted feel."
     },
     "Sketchbook": {
         "name": "Sketchbook",
@@ -87,12 +87,12 @@ image_format_lookup = {
     "photo-releastic": { # Note: Typo in original key "photo-releastic" is kept for consistency
         "name": "Photo realistic",
         "description": "Photo realistic style",
-        "longDescription": "A lifelike, cinematic style with natural lighting, sharp detail, and dramatic depth of field."
+        "longDescription": "A lifelike, cinematic style with natural lighting, vibrant colors, sharp detail, and dramatic depth of field."
     },
     "cyberpunk": {
         "name": "Cyberpunk",
-        "description": "Cyberpunk style",
-        "longDescription": "A neon-lit, high-contrast style with dark textures, glowing highlights, and a gritty futuristic vibe."
+        "description": "Luminous Cyber Noir",
+        "longDescription": "A cinematic, futuristic rendering style defined by luminous contrast and rich neon hues of violet, cyan, and magenta, balanced against cool, atmospheric shadows. Lighting glows through haze and reflection, creating a moody yet clearly legible composition with preserved midtone detail and visible texture. The overall look feels immersive, stylized, and vividly illuminated without becoming overly dark."
     },
     "retro-vibrant": {
         "name": "Retro illustration",
@@ -1183,3 +1183,4 @@ Example Output Structure (follow this JSON format precisely):
             "statusCode": 500,
             "body": json.dumps(f"Error processing file: {error_message}")
         }
+
