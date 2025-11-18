@@ -1,6 +1,7 @@
 # Define the path to your local layer zip file
 locals {
   python_dependencies_layer_zip_path = "${path.module}/python_dependencies_layer.zip"
+  faiss_dependencies_layer_zip_path = "${path.module}/faiss_dependencies_layer.zip"
   stripe_layer_zip_path = "${path.module}/stripe_layer.zip"
   html_dependencies_layer_zip_path = "${path.module}/html_dependencies_layer.zip"
   brevo_dependencies_layer_zip_path = "${path.module}/brevo_dependencies_layer.zip"
@@ -49,6 +50,15 @@ resource "aws_lambda_layer_version" "brevo_dependencies_layer" {
   layer_name          = "brevo-dependencies-layer-${var.environment}"
   compatible_runtimes = ["python3.10", "python3.11"]
   description         = "Lambda Layer containing Brevo API dependencies"
+}
+
+resource "aws_lambda_layer_version" "faiss_dependencies_layer" {
+  filename            = local.faiss_dependencies_layer_zip_path
+  source_code_hash    = filebase64sha256(local.faiss_dependencies_layer_zip_path)
+
+  layer_name          = "faiss-dependencies-layer-${var.environment}"
+  compatible_runtimes = ["python3.10", "python3.11"]
+  description         = "Lambda Layer containing FAISS and NumPy for vector search"
 }
 
 # Lambda function for start-summary-chain
@@ -359,7 +369,7 @@ resource "aws_lambda_function" "create_campaign_index" {
   source_code_hash = filebase64sha256("${path.module}/create-campaign-index.zip")
 
   layers = [
-    aws_lambda_layer_version.python_dependencies_layer.arn
+    aws_lambda_layer_version.faiss_dependencies_layer.arn
   ]
 
   environment {
@@ -426,7 +436,8 @@ resource "aws_lambda_function" "campaign_chat" {
   source_code_hash = filebase64sha256("${path.module}/campaign-chat.zip")
 
   layers = [
-    aws_lambda_layer_version.python_dependencies_layer.arn
+    aws_lambda_layer_version.python_dependencies_layer.arn,
+    aws_lambda_layer_version.faiss_dependencies_layer.arn
   ]
 
   environment {

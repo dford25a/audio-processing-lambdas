@@ -141,6 +141,7 @@ def handler(event, context):
         
         # Calculate segments
         segment_length_sec = 300  # 5 minutes
+        min_segment_duration = 10  # Don't create segments shorter than 10 seconds
         
         # If the audio is shorter than the segment length, no need to segment
         if duration_seconds <= segment_length_sec:
@@ -153,8 +154,20 @@ def handler(event, context):
                 "creditsToRefund": event.get("creditsToRefund")
             }
 
-        num_segments = math.ceil(duration_seconds / segment_length_sec)
-        print(f"File will be split into {num_segments} segments of {segment_length_sec} seconds each")
+        # Calculate number of segments, avoiding creating segments shorter than min_segment_duration
+        full_segments = int(duration_seconds / segment_length_sec)
+        remaining_duration = duration_seconds - (full_segments * segment_length_sec)
+        
+        print(f"Segmentation calculation: full_segments={full_segments}, remaining_duration={remaining_duration:.6f}s")
+        
+        if remaining_duration < min_segment_duration:
+            # Remainder is too short, extend the last segment to include it
+            num_segments = max(1, full_segments)
+            print(f"File will be split into {num_segments} segments (last segment extended to avoid creating a {remaining_duration:.6f}s segment)")
+        else:
+            # Remainder is long enough for its own segment
+            num_segments = full_segments + 1
+            print(f"File will be split into {num_segments} segments of up to {segment_length_sec} seconds each")
         
         # Determine optimal number of concurrent processors
         # Balancing between parallelism and memory usage
@@ -166,10 +179,17 @@ def handler(event, context):
         segments = []
         for i in range(num_segments):
             start_time = i * segment_length_sec
-            duration = min(segment_length_sec, duration_seconds - start_time)
+            
+            # For the last segment, include all remaining audio
+            if i == num_segments - 1:
+                duration = duration_seconds - start_time
+            else:
+                duration = segment_length_sec
             
             segment_number = i + 1
             output_key = f"{out_subdir}{base_name}_{format_number(segment_number)}_of_{format_number(num_segments)}.{output_ext}"
+            
+            print(f"Segment {segment_number}: start={start_time:.2f}s, duration={duration:.2f}s")
             
             segments.append({
                 'segment_number': segment_number,

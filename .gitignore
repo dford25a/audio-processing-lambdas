@@ -27,6 +27,10 @@ __pycache__/
 *.so
 .Python
 build/
+
+# Remove experimental Docker-based layer build artifacts/scripts if present
+python_dependencies_layer_build/
+faiss_dependencies_layer_build/
 develop-eggs/
 dist/
 downloads/

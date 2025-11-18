@@ -317,6 +317,110 @@ mutation CreateSegment($input: CreateSegmentInput!) {
 }
 """
 
+UPDATE_SEGMENT_MUTATION = """
+mutation UpdateSegment($input: UpdateSegmentInput!, $condition: ModelSegmentConditionInput) {
+  updateSegment(input: $input, condition: $condition) {
+    id
+    _version
+    title
+    brief
+    description
+    image
+    index
+    owner
+    sessionId
+    sessionSegmentsId
+    adventurerSegmentsId
+    locationSegmentsId
+    nPCSegmentsId
+    updatedAt
+  }
+}
+"""
+
+# Link table queries and mutations to associate Sessions with Adventurers/NPCs/Locations
+LIST_SESSION_ADVENTURERS_QUERY = """
+query ListSessionAdventurers($filter: ModelSessionAdventurersFilterInput, $limit: Int, $nextToken: String) {
+  listSessionAdventurers(filter: $filter, limit: $limit, nextToken: $nextToken) {
+    items {
+      id
+      _version
+      sessionId
+      adventurerId
+    }
+    nextToken
+  }
+}
+"""
+
+LIST_SESSION_NPCS_QUERY = """
+query ListSessionNpcs($filter: ModelSessionNpcsFilterInput, $limit: Int, $nextToken: String) {
+  listSessionNpcs(filter: $filter, limit: $limit, nextToken: $nextToken) {
+    items {
+      id
+      _version
+      sessionId
+      nPCId
+    }
+    nextToken
+  }
+}
+"""
+
+LIST_SESSION_LOCATIONS_QUERY = """
+query ListSessionLocations($filter: ModelSessionLocationsFilterInput, $limit: Int, $nextToken: String) {
+  listSessionLocations(filter: $filter, limit: $limit, nextToken: $nextToken) {
+    items {
+      id
+      _version
+      sessionId
+      locationId
+    }
+    nextToken
+  }
+}
+"""
+
+UPDATE_SESSION_ADVENTURERS_MUTATION = """
+mutation UpdateSessionAdventurers($input: UpdateSessionAdventurersInput!, $condition: ModelSessionAdventurersConditionInput) {
+  updateSessionAdventurers(input: $input, condition: $condition) {
+    id
+    _version
+    sessionId
+    adventurerId
+    updatedAt
+  }
+}
+"""
+
+UPDATE_SESSION_NPCS_MUTATION = """
+mutation UpdateSessionNpcs($input: UpdateSessionNpcsInput!, $condition: ModelSessionNpcsConditionInput) {
+  updateSessionNpcs(input: $input, condition: $condition) {
+    id
+    _version
+    sessionId
+    nPCId
+    updatedAt
+  }
+}
+"""
+
+UPDATE_SESSION_LOCATIONS_MUTATION = """
+mutation UpdateSessionLocations($input: UpdateSessionLocationsInput!, $condition: ModelSessionLocationsConditionInput) {
+  updateSessionLocations(input: $input, condition: $condition) {
+    id
+    _version
+    sessionId
+    locationId
+    updatedAt
+  }
+}
+"""
+
+# Create link mutations (join records) to associate Session with Adventurers/NPCs/Locations
+
+
+
 # --- AppSync Helper Function (API Key Auth) ---
 def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -1054,7 +1158,8 @@ Example Output Structure (follow this JSON format precisely):
                 }
                 
                 segment_response = execute_graphql_request(CREATE_SEGMENT_MUTATION, {"input": create_segment_input})
-                if segment_response.get("data", {}).get("createSegment"):
+                created_record = segment_response.get("data", {}).get("createSegment")
+                if created_record:
                     created_segments_count += 1
                 else:
                     processing_errors.append(f"Failed to create session segment '{segment.title}': {segment_response.get('errors')}")
@@ -1062,34 +1167,91 @@ Example Output Structure (follow this JSON format precisely):
             except Exception as e:
                 processing_errors.append(f"Exception processing session segment '{segment.title}': {e}")
 
-        # Process Highlight Segments
-        def process_highlights(highlights, segment_type_id_key, entity_name):
-            nonlocal created_segments_count
-            print(f"Processing {len(highlights)} {entity_name} highlight segments...")
-            for highlight in highlights:
-                if not highlight.id:
-                    print(f"Skipping {entity_name} highlight for '{highlight.name}' as it has no ID.")
-                    continue
-                try:
-                    print(f"Processing {entity_name} segment for: '{highlight.name}' (ID: {highlight.id})")
-                    create_segment_input = {
-                        segment_type_id_key: highlight.id,
-                        "title": session_title,
-                        "description": highlight.highlights,
-                        "owner": segment_owner_value_for_appsync,
-                        "sessionId": session_id
-                    }
-                    segment_response = execute_graphql_request(CREATE_SEGMENT_MUTATION, {"input": create_segment_input})
-                    if segment_response.get("data", {}).get("createSegment"):
-                        created_segments_count += 1
-                    else:
-                        processing_errors.append(f"Failed to create {entity_name} highlight for '{highlight.name}': {segment_response.get('errors')}")
-                except Exception as e:
-                    processing_errors.append(f"Exception processing {entity_name} highlight for '{highlight.name}': {e}")
+        # Link session to Adventurers/NPCs/Locations using update mutations on join models (no segment creation here)
+        def fetch_session_links(query_str: str, list_key: str, session_id_val: str) -> List[Dict[str, Any]]:
+            items: List[Dict[str, Any]] = []
+            next_token = None
+            pages = 0
+            MAX_PAGES = 25
+            while pages < MAX_PAGES:
+                pages += 1
+                variables = {"filter": {"sessionId": {"eq": session_id_val}}, "limit": 100, "nextToken": next_token}
+                resp = execute_graphql_request(query_str, variables)
+                data = resp.get("data", {})
+                page = data.get(list_key) or {}
+                items.extend(page.get("items", []))
+                next_token = page.get("nextToken")
+                if not next_token:
+                    break
+            return items
 
-        process_highlights(summary_elements_response.adventurerHighlights, "adventurerSegmentsId", "Adventurer")
-        process_highlights(summary_elements_response.locationHighlights, "locationSegmentsId", "Location")
-        process_highlights(summary_elements_response.npcHighlights, "nPCSegmentsId", "NPC")
+        def update_link_item(mutation_str: str, item: Dict[str, Any], id_field_name: str, session_id_val: str, entity_id_val: str) -> bool:
+            update_input = {
+                "id": item["id"],
+                "_version": item["_version"],
+                "sessionId": session_id_val,
+                id_field_name: entity_id_val
+            }
+            resp = execute_graphql_request(mutation_str, {"input": update_input})
+            return resp.get("data") is not None and any(v is not None for v in resp.get("data", {}).values())
+
+        try:
+            # Collect unique entity IDs from LLM output after mapping
+            adventurer_ids = [*sorted({h.id for h in summary_elements_response.adventurerHighlights if h.id})]
+            npc_ids = [*sorted({h.id for h in summary_elements_response.npcHighlights if h.id})]
+            location_ids = [*sorted({h.id for h in summary_elements_response.locationHighlights if h.id})]
+
+            print(f"Preparing to link Session {session_id} to {len(adventurer_ids)} adventurers, {len(npc_ids)} NPCs, {len(location_ids)} locations.")
+
+            # Fetch existing join records for this session using list* queries with filter
+            existing_adv_items = fetch_session_links(LIST_SESSION_ADVENTURERS_QUERY, "listSessionAdventurers", session_id)
+            existing_npc_items = fetch_session_links(LIST_SESSION_NPCS_QUERY, "listSessionNpcs", session_id)
+            existing_loc_items = fetch_session_links(LIST_SESSION_LOCATIONS_QUERY, "listSessionLocations", session_id)
+
+            # Build maps of already-linked entities and placeholders (records lacking an entityId)
+            adv_by_entity = {it.get("adventurerId"): it for it in existing_adv_items if it.get("adventurerId")}
+            npc_by_entity = {it.get("nPCId"): it for it in existing_npc_items if it.get("nPCId")}
+            loc_by_entity = {it.get("locationId"): it for it in existing_loc_items if it.get("locationId")}
+
+            adv_placeholders = [it for it in existing_adv_items if not it.get("adventurerId")]
+            npc_placeholders = [it for it in existing_npc_items if not it.get("nPCId")]
+            loc_placeholders = [it for it in existing_loc_items if not it.get("locationId")]
+
+            # Assign adventurer links into available placeholders (update only; no create)
+            for adv_id in adventurer_ids:
+                if adv_id in adv_by_entity:
+                    continue
+                if adv_placeholders:
+                    item = adv_placeholders.pop(0)
+                    if not update_link_item(UPDATE_SESSION_ADVENTURERS_MUTATION, item, "adventurerId", session_id, adv_id):
+                        processing_errors.append(f"Failed to update SessionAdventurers link for adventurerId {adv_id}")
+                else:
+                    print(f"Warning: No available placeholder SessionAdventurers record to link adventurerId {adv_id} for session {session_id}.")
+
+            # Assign NPC links into available placeholders (update only; no create)
+            for npc_id in npc_ids:
+                if npc_id in npc_by_entity:
+                    continue
+                if npc_placeholders:
+                    item = npc_placeholders.pop(0)
+                    if not update_link_item(UPDATE_SESSION_NPCS_MUTATION, item, "nPCId", session_id, npc_id):
+                        processing_errors.append(f"Failed to update SessionNpcs link for nPCId {npc_id}")
+                else:
+                    print(f"Warning: No available placeholder SessionNpcs record to link nPCId {npc_id} for session {session_id}.")
+
+            # Assign Location links into available placeholders (update only; no create)
+            for loc_id in location_ids:
+                if loc_id in loc_by_entity:
+                    continue
+                if loc_placeholders:
+                    item = loc_placeholders.pop(0)
+                    if not update_link_item(UPDATE_SESSION_LOCATIONS_MUTATION, item, "locationId", session_id, loc_id):
+                        processing_errors.append(f"Failed to update SessionLocations link for locationId {loc_id}")
+                else:
+                    print(f"Warning: No available placeholder SessionLocations record to link locationId {loc_id} for session {session_id}.")
+
+        except Exception as e:
+            processing_errors.append(f"Exception while updating session links: {e}")
 
         if processing_errors:
             aggregated_error_message = f"Encountered {len(processing_errors)} error(s) during segment processing. First error: {processing_errors[0]}"

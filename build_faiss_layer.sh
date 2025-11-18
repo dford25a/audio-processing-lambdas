@@ -4,16 +4,16 @@
 set -e
 
 # --- Configuration ---
-PYTHON_VERSION="3.11" # Match this to your Lambda runtime (or highest version if multiple)
+PYTHON_VERSION="3.11" # Match this to your Lambda runtime
 PLATFORM="manylinux2014_x86_64" # For x86_64 Lambda architecture.
-LAYER_NAME="python_dependencies" # New generic name for the combined layer
+LAYER_NAME="faiss_dependencies" # Name for the FAISS layer
 SITE_PACKAGES_SUBDIR="lib/python${PYTHON_VERSION}/site-packages"
 PACKAGE_INSTALL_DIR="python/${SITE_PACKAGES_SUBDIR}" # Standard path for site-packages
 BUILD_DIR="./${LAYER_NAME}_layer_build" # Temporary directory for building the layer
-OUTPUT_ZIP_FILE="${LAYER_NAME}_layer.zip" # New output zip file name
+OUTPUT_ZIP_FILE="${LAYER_NAME}_layer.zip" # Output zip file name
 
 # --- Script Start ---
-echo "Starting combined Python dependencies Lambda layer creation..."
+echo "Starting FAISS dependencies Lambda layer creation..."
 
 # 1. Clean up previous build artifacts (if any)
 echo "Cleaning up previous build artifacts..."
@@ -24,32 +24,23 @@ rm -f "${OUTPUT_ZIP_FILE}"
 echo "Creating build directory: ${BUILD_DIR}/${PACKAGE_INSTALL_DIR}"
 mkdir -p "${BUILD_DIR}/${PACKAGE_INSTALL_DIR}"
 
-# 3. Install all dependencies into the target directory
-#    - pydantic: For data validation and settings management.
-#    - openai: For interacting with the OpenAI API.
-#    - requests: For making HTTP requests (used in your final_summary Lambda).
-#    - thefuzz: For fuzzy string matching.
-#    NOTE: faiss-cpu and numpy have been moved to a separate layer (build_faiss_layer.sh)
-echo "Installing dependencies (pydantic, openai, requests, thefuzz) for Python ${PYTHON_VERSION} on ${PLATFORM}..."
+# 3. Install FAISS dependencies into the target directory
+echo "Installing dependencies (faiss-cpu, numpy) for Python ${PYTHON_VERSION} on ${PLATFORM}..."
 pip install \
+    --platform "${PLATFORM}" \
     --target "${BUILD_DIR}/${PACKAGE_INSTALL_DIR}" \
     --implementation cp \
     --python-version "${PYTHON_VERSION}" \
     --only-binary=:all: \
     --upgrade \
-    pydantic \
-    openai \
-    requests \
-    thefuzz
+    faiss-cpu \
+    numpy
 
 # 4. Clean up unnecessary files from the package directory to reduce layer size
 echo "Cleaning up unnecessary files (.pyc, __pycache__, tests, etc.)..."
 # Remove .pyc files and __pycache__ directories
 find "${BUILD_DIR}/python" -type f -name '*.pyc' -delete
 find "${BUILD_DIR}/python" -type d -name '__pycache__' -exec rm -rf {} +
-# Consider removing other non-essential files like tests, examples, if size is critical
-# Example: find "${BUILD_DIR}/${PACKAGE_INSTALL_DIR}" -type d -name 'tests' -exec rm -rf {} +
-# Example: find "${BUILD_DIR}/${PACKAGE_INSTALL_DIR}" -type d -name 'examples' -exec rm -rf {} +
 
 # 5. Create the zip file
 echo "Creating Lambda layer zip file: ${OUTPUT_ZIP_FILE}..."
@@ -57,17 +48,15 @@ echo "Creating Lambda layer zip file: ${OUTPUT_ZIP_FILE}..."
   cd "${BUILD_DIR}" && \
   zip -r "../${OUTPUT_ZIP_FILE}" python # Zip the 'python' directory from BUILD_DIR
 )
-# The subshell and cd ensure that the paths in the zip file are relative
-# to the BUILD_DIR, resulting in 'python/lib/pythonX.Y/site-packages/...' structure in the zip.
 
 # 6. Clean up the build directory
 echo "Cleaning up build directory: ${BUILD_DIR}..."
 rm -rf "${BUILD_DIR}"
 
 echo "-----------------------------------------------------------------------"
-echo "Combined Python dependencies Lambda layer created successfully: ${OUTPUT_ZIP_FILE}"
+echo "FAISS dependencies Lambda layer created successfully: ${OUTPUT_ZIP_FILE}"
 echo "Ensure this zip file is in the location expected by your Terraform script."
-echo "The layer includes: pydantic, openai, requests, and their dependencies."
+echo "The layer includes: faiss-cpu, numpy, and their dependencies."
 echo "Lambda function architecture should match: ${PLATFORM}"
 echo "Lambda runtime should be compatible with Python: ${PYTHON_VERSION}"
 echo "-----------------------------------------------------------------------"

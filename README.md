@@ -36,9 +36,11 @@ The system consists of Lambda functions, containerized applications, Step Functi
 
 - **migrate-historical-segments.py**: Migration script for historical data segments
 - **Layer Building Scripts**: Automated scripts for building Lambda layers
-  - `build_layer.sh`: General Lambda layer builder
-  - `build_html_layer.sh`: HTML processing layer builder  
-  - `build_stripe_layer.sh`: Stripe integration layer builder
+- `build_layer.sh`: Base Python dependencies layer (pydantic, openai, requests, thefuzz)
+- `build_faiss_layer.sh`: FAISS & NumPy layer used by campaign chat / index functions
+- `build_html_layer.sh`: HTML processing layer builder  
+- `build_stripe_layer.sh`: Stripe integration layer builder
+- `build_brevo_layer.sh`: Brevo (email) API dependencies layer
 
 ## Prerequisites
 
@@ -70,16 +72,29 @@ audio-processing-lambdas/
 
 ### 1. Build Lambda Layers
 
+Run these from the repo root (`audio-processing-lambdas/`).
+
 ```bash
-# Build general layer
+# Base Python dependencies (pydantic, openai, requests, thefuzz)
 ./build_layer.sh
 
-# Build HTML processing layer
+# FAISS + NumPy layer for campaign index/chat
+./build_faiss_layer.sh
+
+# HTML processing layer
 ./build_html_layer.sh
 
-# Build Stripe integration layer
+# Stripe integration layer
 ./build_stripe_layer.sh
+
+# Brevo (email) API dependencies layer
+./build_brevo_layer.sh
 ```
+
+> **Note:** Layer zips are written to the repo root and then referenced from
+> `terraform/application/lambda.tf` (e.g., `python_dependencies_layer.zip`,
+> `faiss_dependencies_layer.zip`, etc.). Ensure the zips are present before
+> running Terraform.
 
 ### 2. Build Lambda ZIP Files
 

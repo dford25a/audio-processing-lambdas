@@ -1,9 +1,14 @@
 #!/bin/bash
 
-# This script creates ZIP files for Python Lambda functions
-# It assumes it's being run from the ./terraform/application/ directory.
+# This script creates ZIP files for Python Lambda functions.
+# It *originally* assumed it's being run from the ./terraform/application/ directory,
+# but it now auto-cds to its own directory so you can invoke it from anywhere.
 # Lambda source code is expected in directories like ../../final-summary/
 # (i.e., sibling directories to the 'terraform' directory).
+
+# Always run from the directory where this script lives
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
@@ -31,6 +36,31 @@ DEFAULT_LAMBDAS=(
 )
 
 BUILD_DIR="build" # Temporary build directory within terraform/application/
+
+# Lambdas that rely entirely on shared layers for dependencies.
+# For these, we DO NOT vendor requirements into the function zip to avoid
+# overshadowing layer packages (which caused the pydantic_core error).
+USE_LAYER_LAMBDAS=(
+  "start-summary-chain"
+  "init-credits"
+  "refund-credits"
+  "final-summary"
+  "revise-summary"
+  "session-chat"
+  "campaign-chat"
+  "create-campaign-index"
+  "spend-credits"
+)
+
+is_in_use_layer_list() {
+  local name="$1"
+  for item in "${USE_LAYER_LAMBDAS[@]}"; do
+    if [[ "$item" == "$name" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 # --- Script Start ---
 echo "Starting Lambda packaging process..."
@@ -63,6 +93,12 @@ for lambda_name in "${LAMBDAS[@]}"; do
   echo "-----------------------------------------------------"
 
   LAMBDA_SRC_DIR_RELATIVE="${LAMBDA_SOURCE_ROOT}${lambda_name}" # Relative path for checks and cp
+  # Resolve absolute path for use after pushd
+  if [ -d "$LAMBDA_SRC_DIR_RELATIVE" ]; then
+    LAMBDA_SRC_DIR_ABS="$(cd "$LAMBDA_SRC_DIR_RELATIVE" && pwd)"
+  else
+    LAMBDA_SRC_DIR_ABS=""
+  fi
   LAMBDA_BUILD_TARGET_DIR="${BUILD_DIR}/${lambda_name}"
   # Output zip file will be in the current directory (terraform/application)
   # This matches how your Terraform lambda.tf file references them (e.g., "${path.module}/final-summary.zip")
@@ -94,23 +130,28 @@ for lambda_name in "${LAMBDAS[@]}"; do
   echo "Changed directory to $(pwd)"
 
   # Install dependencies if any
-  if [ "$lambda_name" == "final-summary" ]; then
-    echo "Installing 'requests' library for ${lambda_name}..."
-    # Ensure pip is available and python3 is appropriate.
-    # For environments with multiple pythons, 'python3 -m pip' is safer.
-    python3 -m pip install requests -t . --upgrade 
-    echo "'requests' installed."
+  # If this lambda relies on shared layers, skip vendoring dependencies to avoid overshadowing the layer
+  if is_in_use_layer_list "$lambda_name"; then
+    echo "Skipping dependency install for ${lambda_name} (uses shared layers)."
+  else
+    # Prefer per-lambda requirements.txt next to app.py
+    if [ -n "${LAMBDA_SRC_DIR_ABS}" ] && [ -f "${LAMBDA_SRC_DIR_ABS}/requirements.txt" ]; then
+      echo "Installing dependencies from requirements.txt for ${lambda_name}..."
+      cp "${LAMBDA_SRC_DIR_ABS}/requirements.txt" .
+      # Use python3 -m pip to avoid PATH issues
+      python3 -m pip install -r requirements.txt -t . --upgrade
+      rm -f requirements.txt
+      echo "Dependencies installed for ${lambda_name}."
+    elif [ "$lambda_name" == "final-summary" ]; then
+      echo "No vendored deps needed for ${lambda_name}; relying on layer."
+    fi
   fi
-  
-  # Add other specific dependencies for other lambdas here if needed
-  # elif [ "$lambda_name" == "another-lambda-with-deps" ]; then
-  #   echo "Installing dependencies for ${lambda_name}..."
-  #   python3 -m pip install somepackage anotherpackage -t .
-  #   echo "Dependencies installed for ${lambda_name}."
-  # fi
 
   # Create the ZIP file in the terraform/application directory
+  # IMPORTANT: remove any existing zip first, otherwise `zip` will update/append
+  # and stale dependencies from previous builds (e.g., faiss/numpy) will remain.
   echo "Creating ZIP file: ../../${ZIP_FILE_NAME}"
+  rm -f "../../${ZIP_FILE_NAME}"
   zip -r "../../${ZIP_FILE_NAME}" .
   
   popd > /dev/null # Go back to the original script directory (terraform/application)

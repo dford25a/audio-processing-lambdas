@@ -14,8 +14,29 @@ def lambda_handler(event, context):
     if not transcribed_segments:
         raise ValueError("Input 'transcribed_segments' is empty.")
 
+    # Sort segments by extracting the segment number from the key
+    # Keys are in format: path/filename_XX_of_YY.ext
+    def extract_segment_number(segment):
+        try:
+            key = segment["key"]
+            # Extract the filename from the key
+            filename = os.path.basename(key)
+            # Use regex to extract the segment number (XX in _XX_of_YY pattern)
+            match = re.search(r'_(\d+)_of_(\d+)', filename)
+            if match:
+                return int(match.group(1))
+            # If no match found, return 0 to place it at the beginning
+            return 0
+        except Exception as e:
+            print(f"Warning: Could not extract segment number from {segment.get('key', 'unknown')}: {e}")
+            return 0
+    
+    # Sort the segments before combining
+    sorted_segments = sorted(transcribed_segments, key=extract_segment_number)
+    print(f"Sorted {len(sorted_segments)} segments for combining")
+    
     combined_text = ""
-    for segment in transcribed_segments:
+    for segment in sorted_segments:
         # Validate that the segment data is a valid result from the Transcribe lambda.
         # If 'key' is missing, it means a transcription task failed and returned an error object.
         if "key" not in segment:
@@ -29,6 +50,7 @@ def lambda_handler(event, context):
             segment_obj = s3.get_object(Bucket=bucket, Key=segment_key)
             segment_text = segment_obj['Body'].read().decode('utf-8')
             combined_text += segment_text
+            print(f"Added segment: {os.path.basename(segment_key)}")
         except Exception as e:
             # This will now catch errors related to S3 access, etc.
             error_message = f"Error fetching S3 object for segment data: {segment}. Exception: {str(e)}"
