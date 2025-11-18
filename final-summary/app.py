@@ -527,7 +527,7 @@ Updated Description:
         if debug: print(f"Generating updated description for {entity_name}...")
         messages = [{"role": "user", "content": prompt}]
         completion = openai_client.chat.completions.create(
-            model="gpt-4.1-2025-04-14",
+            model="gpt-5.1",
             messages=messages,
             temperature=0.4, # Allow for some creativity in merging text
         )
@@ -658,7 +658,7 @@ def generate_and_upload_image(
             print(f"Generating image... \n  Quality: '{image_quality}'\n  Prompt: '{full_prompt}'")
 
         response = openai_client.images.generate(
-            model="gpt-image-1",
+            model="gpt-image-1-mini",
             prompt=full_prompt,
             n=1,
             size="1536x1024",
@@ -1035,7 +1035,7 @@ Follow these instructions precisely, which are derived from user settings:
 - Game Mechanics: {gen_mechanics_str}
 </generation_instructions>
 
-The output must be a JSON object matching the Pydantic model `SummaryElements`. This includes:
+The output must be a JSON object matching the Pydantic model `SummaryElements`. Do not include any text outside this JSON object. This includes:
 - `tldr`: A string summary of the whole session.
 - `sessionSegments`: A list of 3-5 chronological segment objects. Each must have:
   - 'title': A clear title.
@@ -1043,10 +1043,10 @@ The output must be a JSON object matching the Pydantic model `SummaryElements`. 
   - 'image_prompt': A concise, visual description for gpt-image-1 image generation (describe the scene, not the style).
 - `adventurerHighlights`, `locationHighlights`, `npcHighlights`: Lists of highlight objects. Each must have:
     - 'name': The entity's name.
-    - 'id': The entity's ID from the context below, if available.
     - 'highlights': A list of key moments for that entity.
+    - 'id': May be null or omitted; the system will resolve IDs server-side.
 
-- For `adventurerHighlights`, `locationHighlights`, and `npcHighlights`, you MUST find the matching entity in the context and include its ID. If the entity is not in the context, set the ID to null.
+Do NOT attempt to look up or infer database IDs in the JSON output. Focus on accurate names and high-quality highlight text; IDs will be attached later by the system.
 
 Use the following context to inform your summary:
 Session Transcript:
@@ -1079,7 +1079,7 @@ Example Output Structure (follow this JSON format precisely):
         if debug:
             print(f"Full prompt for OpenAI:\n{prompt[:1000]}...\n...\n...{prompt[-500:]}")
 
-        def get_openai_summary_segments_with_image_prompts(prompt_text: str, model: str = "gpt-4.1-2025-04-14") -> Optional[SummaryElements]:
+        def get_openai_summary_segments_with_image_prompts(prompt_text: str, model: str = "gpt-5.1") -> Optional[SummaryElements]:
             messages = [{"role": "user", "content": prompt_text}]
             try:
                 completion = openai_client.chat.completions.create(
@@ -1262,27 +1262,39 @@ Example Output Structure (follow this JSON format precisely):
         # --- Update NPC and Location Descriptions with Session Highlights ---
         try:
             print("\n--- Starting Post-Session Description Updates ---")
-            
-            # Update NPCs
+
+            # Aggregate highlights per entity ID to avoid duplicate description updates
+            npc_highlights_by_id: Dict[str, List[str]] = {}
             for highlight in summary_elements_response.npcHighlights:
                 if highlight.id:
-                    update_entity_description(
-                        entity_id=highlight.id,
-                        entity_type="NPC",
-                        highlights=highlight.highlights,
-                        debug=debug
-                    )
+                    npc_highlights_by_id.setdefault(highlight.id, []).extend(highlight.highlights)
 
-            # Update Locations
+            location_highlights_by_id: Dict[str, List[str]] = {}
             for highlight in summary_elements_response.locationHighlights:
                 if highlight.id:
-                    update_entity_description(
-                        entity_id=highlight.id,
-                        entity_type="Location",
-                        highlights=highlight.highlights,
-                        debug=debug
-                    )
-            
+                    location_highlights_by_id.setdefault(highlight.id, []).extend(highlight.highlights)
+
+            # Deduplicate and update NPC descriptions
+            for entity_id, highlights in npc_highlights_by_id.items():
+                # Preserve order while removing duplicate strings
+                unique_highlights = list(dict.fromkeys(highlights))
+                update_entity_description(
+                    entity_id=entity_id,
+                    entity_type="NPC",
+                    highlights=unique_highlights,
+                    debug=debug,
+                )
+
+            # Deduplicate and update Location descriptions
+            for entity_id, highlights in location_highlights_by_id.items():
+                unique_highlights = list(dict.fromkeys(highlights))
+                update_entity_description(
+                    entity_id=entity_id,
+                    entity_type="Location",
+                    highlights=unique_highlights,
+                    debug=debug,
+                )
+
             print("--- Finished Post-Session Description Updates ---\n")
 
         except Exception as desc_update_err:
@@ -1345,4 +1357,3 @@ Example Output Structure (follow this JSON format precisely):
             "statusCode": 500,
             "body": json.dumps(f"Error processing file: {error_message}")
         }
-
