@@ -132,6 +132,40 @@ def lambda_handler(event, context):
             print(f"[ERROR] {error_message}")
             return format_response(408, {"error": error_message})
 
+        # --- Validate purchaseStatus before invoking Step Function ---
+        session_id = parse_session_id_from_stem(audio_filename_stem)
+        if not session_id:
+            error_message = f"Could not parse session ID from '{audio_filename_stem}'."
+            print(f"[ERROR] {error_message}")
+            return format_response(400, {"error": error_message})
+        
+        # Fetch the current session data including purchaseStatus and version
+        get_session_query = """
+        query GetSession($id: ID!) {
+          getSession(id: $id) {
+            _version
+            purchaseStatus
+          }
+        }
+        """
+        session_data_response = execute_graphql_request(get_session_query, {"id": session_id})
+        current_session = session_data_response.get("data", {}).get("getSession")
+
+        if not current_session or "_version" not in current_session:
+            error_message = f"Could not fetch session data for session {session_id}."
+            print(f"[ERROR] {error_message}")
+            return format_response(404, {"error": error_message})
+        
+        # Validate purchaseStatus
+        purchase_status = current_session.get("purchaseStatus")
+        if purchase_status != "PURCHASED":
+            error_message = f"Session {session_id} has invalid purchaseStatus: '{purchase_status}'. Expected 'PURCHASED'."
+            print(f"[ERROR] {error_message}")
+            return format_response(403, {"error": error_message})
+        
+        print(f"Session {session_id} purchaseStatus validated: {purchase_status}")
+        session_version = current_session["_version"]
+
         # Invoke Step Function
         sfn_client = boto3.client('stepfunctions')
         sfn_payload = {
@@ -147,28 +181,9 @@ def lambda_handler(event, context):
         )
 
         # --- Update session status to QUEUED ---
-        session_id = parse_session_id_from_stem(audio_filename_stem)
-        if session_id:
-            # Fetch the current session version before updating
-            get_session_query = """
-            query GetSession($id: ID!) {
-              getSession(id: $id) {
-                _version
-              }
-            }
-            """
-            session_data_response = execute_graphql_request(get_session_query, {"id": session_id})
-            current_session = session_data_response.get("data", {}).get("getSession")
-
-            if current_session and "_version" in current_session:
-                session_version = current_session["_version"]
-                if not update_session_status(session_id, session_version, "QUEUED"):
-                    # Log error but don't fail the entire operation.
-                    print(f"Warning: Failed to update session status for {session_id}, but processing was initiated.")
-            else:
-                print(f"Warning: Could not fetch current version for session {session_id}. Cannot update status.")
-        else:
-            print(f"Warning: Could not parse session ID from '{audio_filename_stem}'. Cannot update status.")
+        if not update_session_status(session_id, session_version, "QUEUED"):
+            # Log error but don't fail the entire operation.
+            print(f"Warning: Failed to update session status for {session_id}, but processing was initiated.")
         
         success_message = f"Step Function successfully invoked for '{audio_filename}'."
         return format_response(200, {"message": success_message, "executionArn": response['executionArn']})

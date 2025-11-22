@@ -198,7 +198,7 @@ def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = No
 
 
 # --- OpenAI Helper Function ---
-def get_openai_completion(prompt_text: str, client: OpenAI, model: str = "gpt-4.1-2025-04-14", debug: bool = True) -> Optional[str]:
+def get_openai_completion(prompt_text: str, client: OpenAI, model: str = "gpt-5.1", debug: bool = True) -> Optional[str]:
     if debug: print(f"Sending prompt to OpenAI (model: {model}). Prompt length: {len(prompt_text)}")
     messages = [{"role": "user", "content": prompt_text}]
     try:
@@ -382,7 +382,11 @@ You will be provided with:
 Your task is to:
 - Revise the TLDR based on the transcript and the user's requests.
 - Revise each Session Segment's title and description based on the transcript and user's requests.
-- IMPORTANT: You MUST return the same number of segments as you were given in the 'Current Session Segments' list. Do not add or remove segments. Revise them in place, maintaining their original order.
+- CRITICAL CONSTRAINT: You MUST return EXACTLY {len(segments_for_llm_prompt)} segments - the same number as provided in 'Current Session Segments'. 
+- If the user asks to "add" content about a topic, incorporate that content into the appropriate existing segment(s). DO NOT create new segments.
+- If the user asks to "remove" content, simply omit that content from the relevant segment(s). DO NOT delete segments.
+- You may redistribute content between existing segments, but the total count must remain {len(segments_for_llm_prompt)}.
+- Maintain the chronological order of segments.
 - Ensure your output is a single, valid JSON object.
 
 Original Generation Settings:

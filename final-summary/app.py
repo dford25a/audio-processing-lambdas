@@ -14,7 +14,6 @@ import boto3
 from pydantic import BaseModel, Field
 import openai # Added for openai.APIError
 from openai import OpenAI
-from thefuzz import process # For fuzzy string matching
 
 # --- CONFIGURATION ---
 OPENAI_API_KEY_FROM_ENV = os.environ.get('OPENAI_API_KEY')
@@ -200,6 +199,17 @@ Example:
 # --- GraphQL Queries and Mutations ---
 GET_SESSION_QUERY = "query GetSession($id: ID!) { getSession(id: $id) { id _version audioFile owner campaign { id } } }"
 
+GET_ADVENTURER_DETAILS_QUERY = """
+query GetAdventurer($id: ID!) {
+  getAdventurer(id: $id) {
+    id
+    name
+    description
+    _version
+  }
+}
+"""
+
 GET_NPC_DETAILS_QUERY = """
 query GetNPC($id: ID!) {
   getNPC(id: $id) {
@@ -218,6 +228,16 @@ query GetLocation($id: ID!) {
     name
     description
     _version
+  }
+}
+"""
+
+UPDATE_ADVENTURER_MUTATION = """
+mutation UpdateAdventurer($input: UpdateAdventurerInput!) {
+  updateAdventurer(input: $input) {
+    id
+    _version
+    description
   }
 }
 """
@@ -456,7 +476,7 @@ def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = No
         
 def update_entity_description(
     entity_id: str,
-    entity_type: str, # "NPC" or "Location"
+    entity_type: str, # "Adventurer", "NPC", or "Location"
     highlights: List[str],
     debug: bool = False
 ) -> bool:
@@ -471,7 +491,12 @@ def update_entity_description(
     print(f"--- Starting description update for {entity_type} ID: {entity_id} ---")
 
     # 1. Determine which GraphQL queries and keys to use
-    if entity_type == "NPC":
+    if entity_type == "Adventurer":
+        get_query = GET_ADVENTURER_DETAILS_QUERY
+        update_mutation = UPDATE_ADVENTURER_MUTATION
+        get_key = "getAdventurer"
+        update_key = "updateAdventurer"
+    elif entity_type == "NPC":
         get_query = GET_NPC_DETAILS_QUERY
         update_mutation = UPDATE_NPC_MUTATION
         get_key = "getNPC"
@@ -562,19 +587,88 @@ Updated Description:
         return False
 
 
-# --- Replace the old helper function with this enhanced version ---
+def llm_match_entity(
+    query_name: str,
+    candidate_names: List[str],
+    entity_type: str,
+    debug: bool = False
+) -> Optional[str]:
+    """
+    Uses gpt-5-mini to intelligently match an entity name to a list of candidates.
+    Returns the matched canonical name or None if no good match exists.
+    
+    Args:
+        query_name: The name to match (e.g., "Fitch Tall Tree")
+        candidate_names: List of canonical names to match against (e.g., ["Fitch", "Balin"])
+        entity_type: Type of entity for context (e.g., "adventurer", "nPC", "location")
+        debug: Flag for verbose logging
+    """
+    if not candidate_names:
+        return None
+    
+    # Build the prompt for the LLM
+    candidates_list = "\n".join(f"- {name}" for name in candidate_names)
+    
+    prompt = f"""You are helping match entity names in a TTRPG session summary.
+
+Task: Determine if "{query_name}" refers to any of these known {entity_type}s:
+{candidates_list}
+
+Rules:
+1. Return ONLY the exact matching name from the list above, or "NO_MATCH" if none match
+2. Consider variations like:
+   - Full names vs nicknames (e.g., "Fitch Tall Tree" = "Fitch")
+   - Descriptive additions (e.g., "The Wart (Ancient Hill-Fort)" ≠ "The Prancing Pony")
+   - Spelling variations or typos
+3. Be strict: only match if you're confident they refer to the same entity
+4. Different locations/NPCs with similar words are NOT matches
+
+Response (one line only):"""
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,  # Deterministic matching
+            max_tokens=50
+        )
+        
+        result = response.choices[0].message.content.strip()
+        
+        if result == "NO_MATCH":
+            if debug:
+                print(f"LLM determined no match for '{query_name}' among candidates")
+            return None
+        
+        # Verify the LLM returned a valid candidate name
+        if result in candidate_names:
+            if debug:
+                print(f"LLM matched '{query_name}' to '{result}'")
+            return result
+        else:
+            # LLM returned something unexpected, treat as no match
+            if debug:
+                print(f"LLM returned unexpected value '{result}' for '{query_name}', treating as no match")
+            return None
+            
+    except Exception as e:
+        print(f"Error in LLM entity matching for '{query_name}': {e}")
+        if debug:
+            traceback.print_exc()
+        return None
+
 
 def map_ids_to_highlights(
     highlights: List[HighlightElement],
     authoritative_entities: List[Dict],
     entity_key_for_db_data: str,
-    score_cutoff: int = 85,
     debug: bool = False
 ):
     """
-    Correctly maps entity IDs to highlight elements using an authoritative list of entities,
-    falling back to fuzzy string matching. This function intentionally OVERWRITES any existing ID
-    on the highlight object to ensure correctness against the provided sources of truth.
+    Maps entity IDs to highlight elements using an authoritative list of entities.
+    Uses direct matching first, then falls back to LLM-based intelligent matching.
+    This function intentionally OVERWRITES any existing ID on the highlight object
+    to ensure correctness against the provided sources of truth.
 
     Args:
         highlights: The list of HighlightElement objects from the LLM.
@@ -582,25 +676,29 @@ def map_ids_to_highlights(
                                 and the session metadata.
         entity_key_for_db_data: The key used in the database query results to access the
                                 nested entity data (e.g., 'adventurer', 'nPC', 'location').
-        score_cutoff: The minimum score for a fuzzy match to be considered valid.
         debug: Flag for verbose logging.
     """
     # Step 1: Build the authoritative name-to-ID map from all trusted sources.
     # This map uses lowercase names for robust, case-insensitive matching.
     name_to_id_map = {}
+    original_case_map = {}  # Keep original casing for LLM matching
+    
     for entity in authoritative_entities:
         # Handles both structures: nested from DB query and flat from metadata
-        name = (entity.get('name') or entity.get(entity_key_for_db_data, {}).get('name', '')).lower()
+        name = entity.get('name') or entity.get(entity_key_for_db_data, {}).get('name', '')
         entity_id = entity.get('id') or entity.get(entity_key_for_db_data, {}).get('id')
         if name and entity_id:
-            name_to_id_map[name] = entity_id
+            name_to_id_map[name.lower()] = entity_id
+            original_case_map[name.lower()] = name
 
     if not name_to_id_map:
-        if debug: print(f"Warning: The authoritative name map for '{entity_key_for_db_data}' is empty. Cannot map IDs.")
+        if debug: 
+            print(f"Warning: The authoritative name map for '{entity_key_for_db_data}' is empty. Cannot map IDs.")
         return
 
-    canonical_names = list(name_to_id_map.keys())
-    if debug: print(f"Starting ID mapping for '{entity_key_for_db_data}'. Authoritative names: {canonical_names}")
+    canonical_names = list(original_case_map.values())  # Use original casing for LLM
+    if debug: 
+        print(f"Starting ID mapping for '{entity_key_for_db_data}'. Authoritative names: {[n.lower() for n in canonical_names]}")
 
     # Step 2: Iterate through highlights and assign the correct ID.
     for highlight in highlights:
@@ -616,18 +714,23 @@ def map_ids_to_highlights(
             print(f"✅ SUCCESS (Direct): Mapped '{highlight.name}' to ID '{highlight.id}'. (LLM originally suggested: {original_llm_id})")
             continue  # Successfully mapped, move to the next highlight
 
-        # Priority 2: If no direct match, fall back to fuzzy matching.
-        match = process.extractOne(highlight.name, canonical_names)
-        if match:
-            best_match_name, score = match
-            if score >= score_cutoff:
-                matched_id = name_to_id_map.get(best_match_name)
+        # Priority 2: Use LLM-based intelligent matching
+        matched_name = llm_match_entity(
+            query_name=highlight.name,
+            candidate_names=canonical_names,
+            entity_type=entity_key_for_db_data,
+            debug=debug
+        )
+        
+        if matched_name:
+            matched_id = name_to_id_map.get(matched_name.lower())
+            if matched_id:
                 highlight.id = matched_id
-                print(f"✅ SUCCESS (Fuzzy): Mapped '{highlight.name}' to '{best_match_name}' (ID: {matched_id}) with score {score}. (LLM ID was: {original_llm_id})")
+                print(f"✅ SUCCESS (LLM): Mapped '{highlight.name}' to '{matched_name}' (ID: {matched_id}). (LLM originally suggested: {original_llm_id})")
             else:
-                print(f"❌ FAILED: Fuzzy match for '{highlight.name}' to '{best_match_name}' was below threshold (Score: {score} < {score_cutoff}). No ID assigned.")
+                print(f"❌ FAILED: LLM matched '{highlight.name}' to '{matched_name}' but ID lookup failed.")
         else:
-            if debug: print(f"Warning: `process.extractOne` returned no match for '{highlight.name}'.")
+            print(f"❌ FAILED: No match found for '{highlight.name}' among {entity_key_for_db_data}s. No ID assigned.")
 
 
 # --- Image Generation and Upload Helper ---
@@ -818,11 +921,14 @@ def fetch_campaign_data(campaign_id, query, data_key, item_key, debug=False):
 def lambda_handler(event, context):
     session_info = None
     key = None
-    debug = True
+    debug = False  # Set to True only for detailed debugging
     s3_image_upload_bucket = None
     updated_session_data_from_final_update = None
 
     try:
+        # High-level lifecycle milestone logging (always on)
+        print(f"Starting final-summary processing")
+        
         if debug:
             print(f"Received event: {json.dumps(event)}")
             print(f"Using AppSync Endpoint: {APPSYNC_API_URL}")
@@ -836,15 +942,13 @@ def lambda_handler(event, context):
             s3_transcript_bucket = record["s3"]["bucket"]["name"]
             key = urllib.parse.unquote_plus(record['s3']['object']['key'], encoding='utf-8')
             s3_image_upload_bucket = os.environ.get('S3_IMAGE_BUCKET_NAME', s3_transcript_bucket)
-            if debug:
-                print("Event detected as legacy SNS/S3 trigger format.")
+            print("Event routing: SNS/S3 trigger")
         else:
             # Step Functions direct input (expects {"bucket": "...", "key": "..."})
             s3_transcript_bucket = event["bucket"]
             key = urllib.parse.unquote_plus(event["key"], encoding='utf-8')
             s3_image_upload_bucket = os.environ.get('S3_IMAGE_BUCKET_NAME', s3_transcript_bucket)
-            if debug:
-                print("Event detected as Step Functions direct input format (bucket/key at top level).")
+            print("Event routing: Step Functions direct input")
 
         s3_transcript_output_prefix = 'public/summaries/final/'
         s3_segment_image_prefix = 'public/segment-images/'
@@ -860,12 +964,12 @@ def lambda_handler(event, context):
             filename_stem_for_metadata = metadata_stem_match.group(1)
         else:
             filename_stem_for_metadata = filename_stem_for_search # Fallback to the original stem if no match
-                                                                                
+        
+        print(f"Processing transcript: {filename_stem_for_search}")
+        
         if debug:
-            print(f"Processing transcript file: {key} from bucket: {s3_transcript_bucket}")
-            print(f"Images will be uploaded to bucket: {s3_image_upload_bucket} under prefix: {s3_segment_image_prefix}")
-            print(f"Original S3 filename (from event object key): {original_filename_with_ext}")
-            print(f"Filename stem for AppSync search AND metadata: {filename_stem_for_search}")
+            print(f"Full key: {key} from bucket: {s3_transcript_bucket}")
+            print(f"Images bucket: {s3_image_upload_bucket} prefix: {s3_segment_image_prefix}")
 
         parsed_session_id = parse_session_id_from_stem(filename_stem_for_search)
 
@@ -874,10 +978,7 @@ def lambda_handler(event, context):
             print(msg)
             raise ValueError(msg)
         
-        if debug:
-            print(f"Parsed Session ID for direct query: {parsed_session_id}")
-
-        print(f"Attempting to fetch Session directly with ID: {parsed_session_id}")
+        print(f"Fetching session: {parsed_session_id}")
         get_session_vars = {"id": parsed_session_id}
         session_response_gql = execute_graphql_request(GET_SESSION_QUERY, get_session_vars)
 
@@ -887,12 +988,14 @@ def lambda_handler(event, context):
         session_info = session_response_gql.get("data", {}).get("getSession") # Store initial session data
 
         if not session_info:
-            msg = f"No AppSync Session found via GetSession for ID '{parsed_session_id}' derived from filename stem '{filename_stem_for_search}'."
+            msg = f"No AppSync Session found via GetSession for ID '{parsed_session_id}'"
             print(msg)
             raise ValueError(msg)
         
+        print(f"Session fetched successfully")
+        
         if debug:
-            print(f"Successfully fetched session via GetSession: {json.dumps(session_info)}")
+            print(f"Session details: {json.dumps(session_info)}")
 
         # --- IDEMPOTENCY CHECK ---
         # If the session is already processed, exit to prevent duplicates from retries.
@@ -929,13 +1032,18 @@ def lambda_handler(event, context):
         metadata_filename = f"{filename_stem_for_metadata}.metadata.json"
         metadata_s3_key = f"{s3_metadata_prefix.rstrip('/')}/{metadata_filename}"
 
+        print(f"Fetching session metadata")
+        
         if debug:
-            print(f"Attempting to fetch session metadata from: s3://{s3_transcript_bucket}/{metadata_s3_key}")
+            print(f"Metadata location: s3://{s3_transcript_bucket}/{metadata_s3_key}")
         try:
             metadata_obj = s3_client.get_object(Bucket=s3_transcript_bucket, Key=metadata_s3_key)
             metadata_file_content = metadata_obj['Body'].read().decode('utf-8')
             session_metadata_content = json.loads(metadata_file_content)
-            if debug: print(f"Successfully fetched and parsed metadata: {json.dumps(session_metadata_content)}")
+            print(f"Metadata loaded successfully")
+            
+            if debug:
+                print(f"Metadata content: {json.dumps(session_metadata_content)}")
 
             # --- Parse Generation Instructions ---
             gen_instructions = session_metadata_content.get("generation_instructions", {})
@@ -980,43 +1088,42 @@ def lambda_handler(event, context):
             metadata_instructions_str = session_metadata_content.get("instructions", "Not provided.")
             
         except s3_client.exceptions.NoSuchKey:
-            if debug: print(f"Metadata file not found at {metadata_s3_key}. Proceeding with defaults.")
+            print(f"Warning: Metadata file not found. Using defaults.")
         except json.JSONDecodeError as e:
-            print(f"Error decoding metadata JSON from {metadata_s3_key}: {e}. Proceeding with defaults.")
+            print(f"Warning: Metadata JSON decode error: {e}. Using defaults.")
         except Exception as e:
-            print(f"An unexpected error occurred while fetching or parsing metadata from {metadata_s3_key}: {e}. Proceeding with defaults.")
-            traceback.print_exc()
+            print(f"Warning: Error fetching metadata: {e}. Using defaults.")
+            if debug:
+                traceback.print_exc()
         # --- End of Fetch Session Metadata ---
 
         segment_owner_value_for_appsync = None
         session_table = dynamodb_resource.Table(DYNAMODB_TABLE_NAME)
         try:
-            if debug: print(f"Fetching session item directly from DynamoDB table '{DYNAMODB_TABLE_NAME}' using ID: {session_id} (for owner field)")
             response_ddb = session_table.get_item(Key={'id': session_id})
             if 'Item' in response_ddb:
                 dynamodb_session_item = response_ddb['Item']
                 segment_owner_value_for_appsync = dynamodb_session_item.get("owner")
-                if debug: print(f"Owner value retrieved from DynamoDB: '{segment_owner_value_for_appsync}'")
-                if not segment_owner_value_for_appsync: print(f"Warning: 'owner' field is missing or empty in DynamoDB item for Session {session_id}.")
-            else: print(f"Warning: Session item with ID '{session_id}' NOT found directly in DynamoDB table '{DYNAMODB_TABLE_NAME}' for owner lookup.")
+                if not segment_owner_value_for_appsync:
+                    print(f"Warning: Owner field missing for session {session_id}")
+            else:
+                print(f"Warning: Session {session_id} not found in DynamoDB")
         except Exception as ddb_e:
-            print(f"Error fetching session owner directly from DynamoDB table '{DYNAMODB_TABLE_NAME}': {str(ddb_e)}. Segments may be created without an owner.")
-            traceback.print_exc()
-        if not segment_owner_value_for_appsync: print(f"Warning: Session {session_id} will have segments created with a null or empty owner.")
-
-        if debug:
-            print(f"Using Session ID: {session_id} (initial_v: {initial_session_version}), Effective Segment Owner: {segment_owner_value_for_appsync}")
+            print(f"Warning: Error fetching session owner from DynamoDB: {str(ddb_e)}")
+            if debug:
+                traceback.print_exc()
 
         campaign_id = session_info.get("campaign", {}).get("id")
         
         # --- Fetch Campaign Context ---
+        print("Fetching campaign context")
         campaign_id = session_info.get("campaign", {}).get("id")
         all_npcs, npc_context_string_campaign = fetch_campaign_data(campaign_id, GET_NPCS_BY_CAMPAIGN_QUERY, 'Npcs', 'nPC', debug)
         all_adventurers, adventurer_context_string_campaign = fetch_campaign_data(campaign_id, GET_ADVENTURERS_BY_CAMPAIGN_QUERY, 'Adventurers', 'adventurer', debug)
         all_locations, location_context_string_campaign = fetch_campaign_data(campaign_id, GET_LOCATIONS_BY_CAMPAIGN_QUERY, 'Locations', 'location', debug)
 
         # Always read the full transcript from the new location
-        # key is expected to be the full transcript key (public/transcripts/full/{base}.txt)
+        print("Reading transcript from S3")
         s3_object_data = s3_client.get_object(Bucket=s3_transcript_bucket, Key=key)
         text_to_summarize = s3_object_data['Body'].read().decode('utf-8')
         if not text_to_summarize.strip():
@@ -1076,8 +1183,10 @@ Example Output Structure (follow this JSON format precisely):
 {example_summary_for_segments_with_images}
 </example_summary>
 """
+        print("Generating summary with LLM")
+        
         if debug:
-            print(f"Full prompt for OpenAI:\n{prompt[:1000]}...\n...\n...{prompt[-500:]}")
+            print(f"Prompt preview:\n{prompt[:500]}...\n...\n...{prompt[-200:]}")
 
         def get_openai_summary_segments_with_image_prompts(prompt_text: str, model: str = "gpt-5.1") -> Optional[SummaryElements]:
             messages = [{"role": "user", "content": prompt_text}]
@@ -1098,20 +1207,27 @@ Example Output Structure (follow this JSON format precisely):
 
         summary_elements_response = get_openai_summary_segments_with_image_prompts(prompt)
         if not summary_elements_response or not isinstance(summary_elements_response, SummaryElements):
-            err_msg = "Failed to get valid SummaryElements from OpenAI or response was not in the expected format."
-            print(f"Error: {err_msg}"); raise Exception(err_msg)
+            err_msg = "Failed to get valid SummaryElements from OpenAI"
+            print(f"Error: {err_msg}")
+            raise Exception(err_msg)
 
-        if debug: print(f"### LLM OUTPUT (Pydantic Model) ###\n{summary_elements_response.model_dump_json(indent=2)}")
+        print("Summary generated successfully")
+        
+        if debug:
+            print(f"LLM output:\n{summary_elements_response.model_dump_json(indent=2)}")
         
         # --- Post-Processing: Map IDs using Fuzzy Matching ---
-        print("--- Starting ID Mapping Process ---")
+        print("Mapping entity IDs")
         map_ids_to_highlights(summary_elements_response.adventurerHighlights, all_adventurers, 'adventurer', debug=debug)
         map_ids_to_highlights(summary_elements_response.npcHighlights, all_npcs, 'nPC', debug=debug)
         map_ids_to_highlights(summary_elements_response.locationHighlights, all_locations, 'location', debug=debug)
-        print("--- Finished ID Mapping Process ---")
-        if debug: print(f"### LLM OUTPUT (After ID Mapping) ###\n{summary_elements_response.model_dump_json(indent=2)}")
+        print("ID mapping completed")
+        
+        if debug:
+            print(f"Mapped output:\n{summary_elements_response.model_dump_json(indent=2)}")
 
         
+        print("Writing summary to S3")
         s3_summary_output_key = f"{s3_transcript_output_prefix.rstrip('/')}/{filename_stem_for_metadata}.json"
         s3_client.put_object(
             Bucket=s3_transcript_bucket,
@@ -1119,14 +1235,14 @@ Example Output Structure (follow this JSON format precisely):
             Body=summary_elements_response.model_dump_json(indent=2),
             ContentType='application/json'
         )
-        print(f"Summary saved to S3: s3://{s3_transcript_bucket}/{s3_summary_output_key}")
+        print(f"Summary written successfully")
         
         # --- Segment Processing ---
         processing_errors = []
         created_segments_count = 0
         
         # Generate all images in parallel first to reduce overall runtime
-        print(f"Generating images for {len(summary_elements_response.sessionSegments)} session segments in parallel...")
+        print(f"Generating {len(summary_elements_response.sessionSegments)} segment images")
         segment_image_s3_keys = generate_and_upload_images_parallel(
             segments=summary_elements_response.sessionSegments,
             s3_bucket=s3_image_upload_bucket,
@@ -1143,10 +1259,11 @@ Example Output Structure (follow this JSON format precisely):
         first_segment_image_s3_key = segment_image_s3_keys[0] if segment_image_s3_keys else None
         
         # Process Session Segments with pre-generated images
-        print(f"Creating database entries for {len(summary_elements_response.sessionSegments)} session segments...")
+        print(f"Creating segment database entries")
         for idx, segment in enumerate(summary_elements_response.sessionSegments):
             try:
-                print(f"Processing session segment {idx + 1}/{len(summary_elements_response.sessionSegments)}: '{segment.title}'")
+                if debug:
+                    print(f"Creating segment {idx + 1}: '{segment.title}'")
                 
                 # Use the pre-generated image key
                 segment_image_s3_key_or_none = segment_image_s3_keys[idx] if idx < len(segment_image_s3_keys) else None
@@ -1162,10 +1279,14 @@ Example Output Structure (follow this JSON format precisely):
                 if created_record:
                     created_segments_count += 1
                 else:
-                    processing_errors.append(f"Failed to create session segment '{segment.title}': {segment_response.get('errors')}")
+                    err_msg = f"Failed to create segment '{segment.title}'"
+                    print(f"Warning: {err_msg}")
+                    processing_errors.append(err_msg)
 
             except Exception as e:
-                processing_errors.append(f"Exception processing session segment '{segment.title}': {e}")
+                err_msg = f"Exception creating segment '{segment.title}': {e}"
+                print(f"Warning: {err_msg}")
+                processing_errors.append(err_msg)
 
         # Link session to Adventurers/NPCs/Locations using update mutations on join models (no segment creation here)
         def fetch_session_links(query_str: str, list_key: str, session_id_val: str) -> List[Dict[str, Any]]:
@@ -1201,7 +1322,7 @@ Example Output Structure (follow this JSON format precisely):
             npc_ids = [*sorted({h.id for h in summary_elements_response.npcHighlights if h.id})]
             location_ids = [*sorted({h.id for h in summary_elements_response.locationHighlights if h.id})]
 
-            print(f"Preparing to link Session {session_id} to {len(adventurer_ids)} adventurers, {len(npc_ids)} NPCs, {len(location_ids)} locations.")
+            print(f"Linking session to entities: {len(adventurer_ids)} adventurers, {len(npc_ids)} NPCs, {len(location_ids)} locations")
 
             # Fetch existing join records for this session using list* queries with filter
             existing_adv_items = fetch_session_links(LIST_SESSION_ADVENTURERS_QUERY, "listSessionAdventurers", session_id)
@@ -1224,9 +1345,10 @@ Example Output Structure (follow this JSON format precisely):
                 if adv_placeholders:
                     item = adv_placeholders.pop(0)
                     if not update_link_item(UPDATE_SESSION_ADVENTURERS_MUTATION, item, "adventurerId", session_id, adv_id):
-                        processing_errors.append(f"Failed to update SessionAdventurers link for adventurerId {adv_id}")
+                        print(f"Warning: Failed to link adventurer {adv_id}")
+                        processing_errors.append(f"Failed to link adventurer {adv_id}")
                 else:
-                    print(f"Warning: No available placeholder SessionAdventurers record to link adventurerId {adv_id} for session {session_id}.")
+                    print(f"Warning: No placeholder available for adventurer {adv_id}")
 
             # Assign NPC links into available placeholders (update only; no create)
             for npc_id in npc_ids:
@@ -1235,9 +1357,10 @@ Example Output Structure (follow this JSON format precisely):
                 if npc_placeholders:
                     item = npc_placeholders.pop(0)
                     if not update_link_item(UPDATE_SESSION_NPCS_MUTATION, item, "nPCId", session_id, npc_id):
-                        processing_errors.append(f"Failed to update SessionNpcs link for nPCId {npc_id}")
+                        print(f"Warning: Failed to link NPC {npc_id}")
+                        processing_errors.append(f"Failed to link NPC {npc_id}")
                 else:
-                    print(f"Warning: No available placeholder SessionNpcs record to link nPCId {npc_id} for session {session_id}.")
+                    print(f"Warning: No placeholder available for NPC {npc_id}")
 
             # Assign Location links into available placeholders (update only; no create)
             for loc_id in location_ids:
@@ -1246,24 +1369,33 @@ Example Output Structure (follow this JSON format precisely):
                 if loc_placeholders:
                     item = loc_placeholders.pop(0)
                     if not update_link_item(UPDATE_SESSION_LOCATIONS_MUTATION, item, "locationId", session_id, loc_id):
-                        processing_errors.append(f"Failed to update SessionLocations link for locationId {loc_id}")
+                        print(f"Warning: Failed to link location {loc_id}")
+                        processing_errors.append(f"Failed to link location {loc_id}")
                 else:
-                    print(f"Warning: No available placeholder SessionLocations record to link locationId {loc_id} for session {session_id}.")
+                    print(f"Warning: No placeholder available for location {loc_id}")
 
         except Exception as e:
-            processing_errors.append(f"Exception while updating session links: {e}")
+            err_msg = f"Exception updating session links: {e}"
+            print(f"Warning: {err_msg}")
+            processing_errors.append(err_msg)
 
         if processing_errors:
-            aggregated_error_message = f"Encountered {len(processing_errors)} error(s) during segment processing. First error: {processing_errors[0]}"
+            aggregated_error_message = f"Encountered {len(processing_errors)} error(s) during processing"
+            print(f"Error: {aggregated_error_message}")
             raise Exception(aggregated_error_message)
 
-        print(f"Successfully created {created_segments_count} total segments.")
+        print(f"Created {created_segments_count} segments successfully")
         
-        # --- Update NPC and Location Descriptions with Session Highlights ---
+        # --- Update Adventurer, NPC and Location Descriptions with Session Highlights ---
         try:
-            print("\n--- Starting Post-Session Description Updates ---")
+            print("Updating entity descriptions")
 
             # Aggregate highlights per entity ID to avoid duplicate description updates
+            adventurer_highlights_by_id: Dict[str, List[str]] = {}
+            for highlight in summary_elements_response.adventurerHighlights:
+                if highlight.id:
+                    adventurer_highlights_by_id.setdefault(highlight.id, []).extend(highlight.highlights)
+
             npc_highlights_by_id: Dict[str, List[str]] = {}
             for highlight in summary_elements_response.npcHighlights:
                 if highlight.id:
@@ -1273,6 +1405,17 @@ Example Output Structure (follow this JSON format precisely):
             for highlight in summary_elements_response.locationHighlights:
                 if highlight.id:
                     location_highlights_by_id.setdefault(highlight.id, []).extend(highlight.highlights)
+
+            # Deduplicate and update Adventurer descriptions
+            for entity_id, highlights in adventurer_highlights_by_id.items():
+                # Preserve order while removing duplicate strings
+                unique_highlights = list(dict.fromkeys(highlights))
+                update_entity_description(
+                    entity_id=entity_id,
+                    entity_type="Adventurer",
+                    highlights=unique_highlights,
+                    debug=debug,
+                )
 
             # Deduplicate and update NPC descriptions
             for entity_id, highlights in npc_highlights_by_id.items():
@@ -1295,15 +1438,16 @@ Example Output Structure (follow this JSON format precisely):
                     debug=debug,
                 )
 
-            print("--- Finished Post-Session Description Updates ---\n")
+            print("Entity descriptions updated")
 
         except Exception as desc_update_err:
             # Log the error but don't fail the entire lambda, as the main task is complete.
-            print(f"An unexpected error occurred during the description update phase: {desc_update_err}")
-            traceback.print_exc()
+            print(f"Warning: Error during description updates: {desc_update_err}")
+            if debug:
+                traceback.print_exc()
 
         # --- Final Session Update ---
-        print(f"Updating Session {session_id} with TLDR, Primary Image, and status to READ...")
+        print("Updating session to READ status")
         final_update_input = {
             "id": session_id, "_version": initial_session_version,
             "transcriptionStatus": "READ", "tldr": [summary_elements_response.tldr] if summary_elements_response.tldr else [],
@@ -1316,13 +1460,13 @@ Example Output Structure (follow this JSON format precisely):
 
         updated_session_data_from_final_update = final_update_response_gql.get("data", {}).get("updateSession")
         if not updated_session_data_from_final_update or "_version" not in updated_session_data_from_final_update:
-            raise Exception("Final AppSync Session update mutation (to READ) returned no data or missing _version.")
+            raise Exception("Final session update returned no data")
 
-        print(f"Successfully updated Session {session_id} to READ state. New version: {updated_session_data_from_final_update['_version']}.")
+        print(f"Session processing completed successfully")
 
         return {
             'statusCode': 200,
-            'body': json.dumps(f"Processed successfully: {key}. {created_segments_count} segments created. Session status set to READ."),
+            'body': json.dumps(f"Processing complete: {created_segments_count} segments created"),
             'userTransactionsTransactionsId': event.get('userTransactionsTransactionsId'),
             'sessionId': event.get('sessionId'),
             'creditsToRefund': event.get('creditsToRefund')
@@ -1330,14 +1474,15 @@ Example Output Structure (follow this JSON format precisely):
 
     except Exception as e:
         error_message = str(e)
-        print(f"FATAL Error processing file {key if key else 'unknown'}: {error_message}")
-        traceback.print_exc()
+        print(f"ERROR: Processing failed: {error_message}")
+        if debug:
+            traceback.print_exc()
 
         if session_info and 'id' in session_info:
             session_id_for_error = session_info['id']
             session_version_for_error = updated_session_data_from_final_update["_version"] if updated_session_data_from_final_update and "_version" in updated_session_data_from_final_update else session_info.get('_version', 1)
             
-            print(f"Attempting to update Session {session_id_for_error} to ERROR state (v: {session_version_for_error})...")
+            print(f"Updating session to ERROR state")
             try:
                 error_update_input = {
                     "id": session_id_for_error, "_version": session_version_for_error,
