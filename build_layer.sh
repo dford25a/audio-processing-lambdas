@@ -28,9 +28,8 @@ mkdir -p "${BUILD_DIR}/${PACKAGE_INSTALL_DIR}"
 #    - pydantic: For data validation and settings management.
 #    - openai: For interacting with the OpenAI API.
 #    - requests: For making HTTP requests (used in your final_summary Lambda).
-#    - thefuzz: For fuzzy string matching.
 #    NOTE: faiss-cpu and numpy have been moved to a separate layer (build_faiss_layer.sh)
-echo "Installing dependencies (pydantic, openai, requests, thefuzz) for Python ${PYTHON_VERSION} on ${PLATFORM}..."
+echo "Installing dependencies (pydantic, openai, requests) for Python ${PYTHON_VERSION} on ${PLATFORM}..."
 pip install \
     --target "${BUILD_DIR}/${PACKAGE_INSTALL_DIR}" \
     --implementation cp \
@@ -39,8 +38,7 @@ pip install \
     --upgrade \
     pydantic \
     openai \
-    requests \
-    thefuzz
+    requests
 
 # 4. Clean up unnecessary files from the package directory to reduce layer size
 echo "Cleaning up unnecessary files (.pyc, __pycache__, tests, etc.)..."
