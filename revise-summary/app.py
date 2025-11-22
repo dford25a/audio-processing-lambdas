@@ -380,7 +380,7 @@ You will be provided with:
 4. User's specific revision requests.
 
 Your task is to:
-- Revise the TLDR based on the transcript and the user's requests.
+- Revise the TLDR based on the transcript and the user's requests. The TLDR should be a concise summary of the whole session. Do NOT simply append to or expand the existing TLDR - create a fresh, concise summary.
 - Revise each Session Segment's title and description based on the transcript and user's requests.
 - CRITICAL CONSTRAINT: You MUST return EXACTLY {len(segments_for_llm_prompt)} segments - the same number as provided in 'Current Session Segments'. 
 - If the user asks to "add" content about a topic, incorporate that content into the appropriate existing segment(s). DO NOT create new segments.
