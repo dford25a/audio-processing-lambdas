@@ -481,7 +481,7 @@ Example of the required JSON output structure:
                 "id": original_segment_data["id"],
                 "_version": original_segment_data["_version"], # Use the segment's own version
                 "title": revised_segment_content.title,
-                "description": revised_segment_content.description if revised_segment_content.description is not None else "",
+                "description": [revised_segment_content.description] if revised_segment_content.description is not None else [],
                 "index": original_segment_data.get("index") # Pass the original index back
             }
             # Remove index from input if it's None, in case the schema doesn't allow null for index on update
