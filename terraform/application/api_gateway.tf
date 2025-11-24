@@ -24,7 +24,7 @@ resource "aws_api_gateway_authorizer" "cognito_authorizer" {
   type              = "COGNITO_USER_POOLS"
   rest_api_id       = aws_api_gateway_rest_api.summary_api.id
   # Ensure data sources are available or replace with static values if needed
-  provider_arns     = ["arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${local.cognito_user_pool_id}"]
+  provider_arns     = ["arn:aws:cognito-idp:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:userpool/${local.cognito_user_pool_id}"]
   identity_source   = "method.request.header.Authorization"
 }
 

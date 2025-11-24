@@ -96,22 +96,22 @@ data "aws_iam_policy_document" "lambda_combined_policy_doc" {
     actions = ["appsync:GraphQL"]
     effect  = "Allow"
     resources = [
-      "arn:aws:appsync:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:apis/${var.appsync_api_id}/*"
+      "arn:aws:appsync:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:apis/${var.appsync_api_id}/*"
     ]
   }
 
   statement {
     actions   = ["bedrock:InvokeModel"]
     effect    = "Allow"
-    resources = ["arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/amazon.titan-embed-text-v2:0"]
+    resources = ["arn:aws:bedrock:${data.aws_region.current.id}::foundation-model/amazon.titan-embed-text-v2:0"]
   }
 
   statement {
     actions = ["ssm:GetParameters"]
     effect  = "Allow"
     resources = [
-      "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${var.stripe_secret_key}",
-      "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${var.stripe_webhook_secret}"
+      "arn:aws:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter${var.stripe_secret_key}",
+      "arn:aws:ssm:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:parameter${var.stripe_webhook_secret}"
     ]
   }
 
