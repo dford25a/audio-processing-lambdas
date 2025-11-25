@@ -365,7 +365,16 @@ def lambda_handler(event, context):
         segments_for_llm_prompt = []
         for seg_data in original_segments_from_appsync: # Iterate over sorted segments
             desc_list = seg_data.get("description", [])
-            desc_str = desc_list[0] if desc_list and isinstance(desc_list, list) else (desc_list if isinstance(desc_list, str) else "")
+            # Handle corrupted data: if multiple descriptions exist, take the LAST one (most recent)
+            if isinstance(desc_list, list) and len(desc_list) > 0:
+                desc_str = desc_list[-1]  # Take the last (most recent) description
+                if len(desc_list) > 1:
+                    if debug: print(f"Warning: Segment {seg_data.get('id')} has {len(desc_list)} descriptions. Using the last one.")
+            elif isinstance(desc_list, str):
+                desc_str = desc_list
+            else:
+                desc_str = ""
+            
             segments_for_llm_prompt.append(SegmentContentForLLM(
                 title=seg_data.get("title", "Untitled Segment"),
                 description=desc_str
@@ -477,20 +486,41 @@ Example of the required JSON output structure:
         for i, revised_segment_content in enumerate(llm_data.revised_sessionSegments):
             original_segment_data = original_segments_from_appsync[i] # Use the sorted original segment data
 
+            # STEP 1: Clear the description array first (AppSync appends to lists instead of replacing)
+            clear_description_input = {
+                "id": original_segment_data["id"],
+                "_version": original_segment_data["_version"],
+                "description": []
+            }
+            
+            if debug: print(f"Step 1: Clearing description for segment ID {original_segment_data['id']}")
+            clear_response = execute_graphql_request(UPDATE_SEGMENT_MUTATION, {"input": clear_description_input}, debug=debug)
+            
+            if not clear_response.get("data", {}).get("updateSegment"):
+                err_detail = f"Failed to clear description for segment {original_segment_data['id']}"
+                if debug: print(f"Error: {err_detail}")
+                segment_update_errors.append(err_detail)
+                continue  # Skip to next segment
+            
+            # Get the new version after clearing
+            new_version = clear_response['data']['updateSegment']['_version']
+            if debug: print(f"Description cleared. New version: {new_version}")
+            
+            # STEP 2: Now set the new description with title
             update_segment_input = {
                 "id": original_segment_data["id"],
-                "_version": original_segment_data["_version"], # Use the segment's own version
+                "_version": new_version,  # Use the updated version
                 "title": revised_segment_content.title,
                 "description": [revised_segment_content.description] if revised_segment_content.description is not None else [],
-                "index": original_segment_data.get("index") # Pass the original index back
+                "index": original_segment_data.get("index")
             }
-            # Remove index from input if it's None, in case the schema doesn't allow null for index on update
+            
+            # Remove index from input if it's None
             if update_segment_input["index"] is None:
                 if debug: print(f"Segment ID {original_segment_data['id']} has a None index; not including in update input.")
                 del update_segment_input["index"]
 
-
-            if debug: print(f"Attempting to update segment ID {original_segment_data['id']} (original index {original_segment_data.get('index')}) with title '{revised_segment_content.title}'")
+            if debug: print(f"Step 2: Updating segment ID {original_segment_data['id']} with title '{revised_segment_content.title}'")
             update_segment_gql_response = execute_graphql_request(UPDATE_SEGMENT_MUTATION, {"input": update_segment_input}, debug=debug)
 
             if not update_segment_gql_response.get("data", {}).get("updateSegment"):
