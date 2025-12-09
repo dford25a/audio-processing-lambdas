@@ -560,3 +560,173 @@ resource "aws_lambda_function" "html_to_url" {
     Environment = var.environment
   }
 }
+
+# =========================================================================
+# NEW LAMBDA FUNCTION: generate-narrative-summary
+# Generates TLDR, session segments, and entity highlights from transcript
+# =========================================================================
+resource "aws_lambda_function" "generate_narrative_summary" {
+  function_name = "generate-narrative-summary${local.config.function_suffix}"
+  handler       = "app.lambda_handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 300
+  memory_size   = 512
+
+  filename         = "${path.module}/generate-narrative-summary.zip"
+  source_code_hash = filebase64sha256("${path.module}/generate-narrative-summary.zip")
+
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      BUCKET_NAME     = local.config.s3_bucket
+      ENVIRONMENT     = var.environment
+      OPENAI_API_KEY  = var.openai_api_key
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
+      DYNAMODB_TABLE  = local.config.dynamodb_table
+    }
+  }
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# =========================================================================
+# NEW LAMBDA FUNCTION: generate-segment-images
+# Generates images for session segments using OpenAI image generation
+# =========================================================================
+resource "aws_lambda_function" "generate_segment_images" {
+  function_name = "generate-segment-images${local.config.function_suffix}"
+  handler       = "app.lambda_handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 300
+  memory_size   = 512
+
+  filename         = "${path.module}/generate-segment-images.zip"
+  source_code_hash = filebase64sha256("${path.module}/generate-segment-images.zip")
+
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      BUCKET_NAME    = local.config.s3_bucket
+      ENVIRONMENT    = var.environment
+      OPENAI_API_KEY = var.openai_api_key
+    }
+  }
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# =========================================================================
+# NEW LAMBDA FUNCTION: persist-summary-data
+# Persists summary data to database (segments, entity links, session update)
+# =========================================================================
+resource "aws_lambda_function" "persist_summary_data" {
+  function_name = "persist-summary-data${local.config.function_suffix}"
+  handler       = "app.lambda_handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 120
+  memory_size   = 256
+
+  filename         = "${path.module}/persist-summary-data.zip"
+  source_code_hash = filebase64sha256("${path.module}/persist-summary-data.zip")
+
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      BUCKET_NAME     = local.config.s3_bucket
+      ENVIRONMENT     = var.environment
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
+    }
+  }
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# =========================================================================
+# NEW LAMBDA FUNCTION: generate-entity-lore
+# Creates new entities with PENDING status and updates existing entity descriptions
+# Called when generate_lore is TRUE
+# =========================================================================
+resource "aws_lambda_function" "generate_entity_lore" {
+  function_name = "generate-entity-lore${local.config.function_suffix}"
+  handler       = "app.lambda_handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 300
+  memory_size   = 512
+
+  filename         = "${path.module}/generate-entity-lore.zip"
+  source_code_hash = filebase64sha256("${path.module}/generate-entity-lore.zip")
+
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      BUCKET_NAME     = local.config.s3_bucket
+      ENVIRONMENT     = var.environment
+      OPENAI_API_KEY  = var.openai_api_key
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
+    }
+  }
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# =========================================================================
+# NEW LAMBDA FUNCTION: update-entity-descriptions
+# Updates existing entity descriptions with session highlights
+# Called when generate_lore is FALSE
+# =========================================================================
+resource "aws_lambda_function" "update_entity_descriptions" {
+  function_name = "update-entity-descriptions${local.config.function_suffix}"
+  handler       = "app.lambda_handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 300
+  memory_size   = 512
+
+  filename         = "${path.module}/update-entity-descriptions.zip"
+  source_code_hash = filebase64sha256("${path.module}/update-entity-descriptions.zip")
+
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      BUCKET_NAME     = local.config.s3_bucket
+      ENVIRONMENT     = var.environment
+      OPENAI_API_KEY  = var.openai_api_key
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
+    }
+  }
+
+  tags = {
+    Environment = var.environment
+  }
+}

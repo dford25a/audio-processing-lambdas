@@ -27,7 +27,12 @@ data "aws_iam_policy_document" "step_function_policy_doc" {
       aws_lambda_function.combine_text_segments.arn,
       aws_lambda_function.final_summary.arn,
       aws_lambda_function.create_campaign_index.arn,
-      aws_lambda_function.refund_credits.arn
+      aws_lambda_function.refund_credits.arn,
+      aws_lambda_function.generate_narrative_summary.arn,
+      aws_lambda_function.generate_segment_images.arn,
+      aws_lambda_function.persist_summary_data.arn,
+      aws_lambda_function.generate_entity_lore.arn,
+      aws_lambda_function.update_entity_descriptions.arn
     ]
   }
 }
@@ -48,11 +53,16 @@ resource "aws_sfn_state_machine" "audio_processing_state_machine" {
   role_arn = aws_iam_role.step_function_exec_role.arn
 
   definition = templatefile("${path.module}/step_function_definition.json.tpl", {
-    segment_audio_arn = aws_lambda_function.segment_audio.arn,
-    transcribe_arn = aws_lambda_function.transcribe.arn,
-    combine_text_segments_arn = aws_lambda_function.combine_text_segments.arn,
-    final_summary_arn = aws_lambda_function.final_summary.arn,
-    create_campaign_index_arn = aws_lambda_function.create_campaign_index.arn,
-    refund_credits_arn = aws_lambda_function.refund_credits.arn
+    segment_audio_arn                = aws_lambda_function.segment_audio.arn,
+    transcribe_arn                   = aws_lambda_function.transcribe.arn,
+    combine_text_segments_arn        = aws_lambda_function.combine_text_segments.arn,
+    final_summary_arn                = aws_lambda_function.final_summary.arn,
+    create_campaign_index_arn        = aws_lambda_function.create_campaign_index.arn,
+    refund_credits_arn               = aws_lambda_function.refund_credits.arn,
+    generate_narrative_summary_arn   = aws_lambda_function.generate_narrative_summary.arn,
+    generate_segment_images_arn      = aws_lambda_function.generate_segment_images.arn,
+    persist_summary_data_arn         = aws_lambda_function.persist_summary_data.arn,
+    generate_entity_lore_arn         = aws_lambda_function.generate_entity_lore.arn,
+    update_entity_descriptions_arn   = aws_lambda_function.update_entity_descriptions.arn
   })
 }

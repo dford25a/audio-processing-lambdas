@@ -33,6 +33,11 @@ DEFAULT_LAMBDAS=(
   "html-to-url"
   "post-cognito-confirmation"
   "error-notifier"
+  "generate-narrative-summary"
+  "generate-segment-images"
+  "persist-summary-data"
+  "generate-entity-lore"
+  "update-entity-descriptions"
 )
 
 BUILD_DIR="build" # Temporary build directory within terraform/application/
@@ -50,6 +55,11 @@ USE_LAYER_LAMBDAS=(
   "campaign-chat"
   "create-campaign-index"
   "spend-credits"
+  "generate-narrative-summary"
+  "generate-segment-images"
+  "persist-summary-data"
+  "generate-entity-lore"
+  "update-entity-descriptions"
 )
 
 is_in_use_layer_list() {
