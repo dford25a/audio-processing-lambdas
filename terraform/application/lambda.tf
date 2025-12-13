@@ -683,11 +683,18 @@ resource "aws_lambda_function" "generate_entity_lore" {
 
   environment {
     variables = {
-      BUCKET_NAME     = local.config.s3_bucket
-      ENVIRONMENT     = var.environment
-      OPENAI_API_KEY  = var.openai_api_key
-      APPSYNC_API_URL = var.appsync_api_url
-      APPSYNC_API_KEY = var.appsync_api_key
+      BUCKET_NAME                = local.config.s3_bucket
+      ENVIRONMENT                = var.environment
+      OPENAI_API_KEY             = var.openai_api_key
+      APPSYNC_API_URL            = var.appsync_api_url
+      APPSYNC_API_KEY            = var.appsync_api_key
+      # DynamoDB linker tables for setting owner field
+      CAMPAIGN_NPCS_TABLE        = local.config.campaign_npcs_table
+      CAMPAIGN_LOCATIONS_TABLE   = local.config.campaign_locations_table
+      CAMPAIGN_ADVENTURERS_TABLE = local.config.campaign_adventurers_table
+      SESSION_NPCS_TABLE         = local.config.session_npcs_table
+      SESSION_LOCATIONS_TABLE    = local.config.session_locations_table
+      SESSION_ADVENTURERS_TABLE  = local.config.session_adventurers_table
     }
   }
 

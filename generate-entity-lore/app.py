@@ -27,7 +27,16 @@ if not APPSYNC_API_KEY_FROM_ENV:
 
 # --- AWS & OPENAI CLIENTS ---
 s3_client = boto3.client("s3", region_name=AWS_REGION)
+dynamodb_client = boto3.client("dynamodb", region_name=AWS_REGION)
 openai_client = OpenAI(api_key=OPENAI_API_KEY_FROM_ENV)
+
+# --- DynamoDB Table Names (from environment or defaults) ---
+CAMPAIGN_NPCS_TABLE = os.environ.get('CAMPAIGN_NPCS_TABLE', 'CampaignNpcs-dev')
+CAMPAIGN_LOCATIONS_TABLE = os.environ.get('CAMPAIGN_LOCATIONS_TABLE', 'CampaignLocations-dev')
+CAMPAIGN_ADVENTURERS_TABLE = os.environ.get('CAMPAIGN_ADVENTURERS_TABLE', 'CampaignAdventurers-dev')
+SESSION_NPCS_TABLE = os.environ.get('SESSION_NPCS_TABLE', 'SessionNpcs-dev')
+SESSION_LOCATIONS_TABLE = os.environ.get('SESSION_LOCATIONS_TABLE', 'SessionLocations-dev')
+SESSION_ADVENTURERS_TABLE = os.environ.get('SESSION_ADVENTURERS_TABLE', 'SessionAdventurers-dev')
 
 
 # --- Pydantic Models for LLM Output ---
@@ -101,6 +110,7 @@ mutation CreateNPC($input: CreateNPCInput!) {
     approvalStatus
     generatedFromSessionId
     generatedAt
+    owner
     _version
   }
 }
@@ -111,12 +121,11 @@ mutation CreateLocation($input: CreateLocationInput!) {
   createLocation(input: $input) {
     id
     name
-    brief
     description
-    type
     approvalStatus
     generatedFromSessionId
     generatedAt
+    owner
     _version
   }
 }
@@ -127,13 +136,47 @@ mutation CreateAdventurer($input: CreateAdventurerInput!) {
   createAdventurer(input: $input) {
     id
     name
-    brief
     description
     race
     class
     approvalStatus
     generatedFromSessionId
     generatedAt
+    owner
+    _version
+  }
+}
+"""
+
+# --- Session Link Mutations ---
+CREATE_SESSION_NPCS_MUTATION = """
+mutation CreateSessionNpcs($input: CreateSessionNpcsInput!) {
+  createSessionNpcs(input: $input) {
+    id
+    sessionId
+    nPCId
+    _version
+  }
+}
+"""
+
+CREATE_SESSION_LOCATIONS_MUTATION = """
+mutation CreateSessionLocations($input: CreateSessionLocationsInput!) {
+  createSessionLocations(input: $input) {
+    id
+    sessionId
+    locationId
+    _version
+  }
+}
+"""
+
+CREATE_SESSION_ADVENTURERS_MUTATION = """
+mutation CreateSessionAdventurers($input: CreateSessionAdventurersInput!) {
+  createSessionAdventurers(input: $input) {
+    id
+    sessionId
+    adventurerId
     _version
   }
 }
@@ -336,11 +379,35 @@ JSON:"""
         return None
 
 
-def create_campaign_entity_link(entity_type: str, entity_id: str, campaign_id: str) -> bool:
+def update_linker_table_owner(table_name: str, link_id: str, owner: str) -> bool:
+    """Updates the owner field in a linker table record using DynamoDB directly."""
+    try:
+        dynamodb_client.update_item(
+            TableName=table_name,
+            Key={
+                'id': {'S': link_id}
+            },
+            UpdateExpression='SET #owner = :owner',
+            ExpressionAttributeNames={
+                '#owner': 'owner'
+            },
+            ExpressionAttributeValues={
+                ':owner': {'S': owner}
+            }
+        )
+        print(f"✅ Updated owner in {table_name} for link ID: {link_id}")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to update owner in {table_name} for link ID {link_id}: {e}")
+        return False
+
+
+def create_campaign_entity_link(entity_type: str, entity_id: str, campaign_id: str, owner: str) -> bool:
     """Creates a link record between a campaign and an entity (NPC, Location, or Adventurer)."""
     if entity_type == "NPC":
         mutation = CREATE_CAMPAIGN_NPCS_MUTATION
         create_key = "createCampaignNpcs"
+        table_name = CAMPAIGN_NPCS_TABLE
         link_input = {
             "campaignId": campaign_id,
             "nPCId": entity_id
@@ -348,6 +415,7 @@ def create_campaign_entity_link(entity_type: str, entity_id: str, campaign_id: s
     elif entity_type == "Location":
         mutation = CREATE_CAMPAIGN_LOCATIONS_MUTATION
         create_key = "createCampaignLocations"
+        table_name = CAMPAIGN_LOCATIONS_TABLE
         link_input = {
             "campaignId": campaign_id,
             "locationId": entity_id
@@ -355,6 +423,7 @@ def create_campaign_entity_link(entity_type: str, entity_id: str, campaign_id: s
     elif entity_type == "Adventurer":
         mutation = CREATE_CAMPAIGN_ADVENTURERS_MUTATION
         create_key = "createCampaignAdventurers"
+        table_name = CAMPAIGN_ADVENTURERS_TABLE
         link_input = {
             "campaignId": campaign_id,
             "adventurerId": entity_id
@@ -366,7 +435,13 @@ def create_campaign_entity_link(entity_type: str, entity_id: str, campaign_id: s
         response = execute_graphql_request(mutation, {"input": link_input})
         created = response.get("data", {}).get(create_key)
         if created and created.get("id"):
-            print(f"✅ Created Campaign{entity_type}s link (ID: {created['id']})")
+            link_id = created['id']
+            print(f"✅ Created Campaign{entity_type}s link (ID: {link_id})")
+            
+            # Update the owner field directly in DynamoDB
+            if owner:
+                update_linker_table_owner(table_name, link_id, owner)
+            
             return True
         else:
             print(f"❌ Failed to create Campaign{entity_type}s link: {response.get('errors')}")
@@ -376,51 +451,92 @@ def create_campaign_entity_link(entity_type: str, entity_id: str, campaign_id: s
         return False
 
 
+def create_session_entity_link(entity_type: str, entity_id: str, session_id: str, owner: str) -> bool:
+    """Creates a link record between a session and an entity (NPC, Location, or Adventurer)."""
+    if entity_type == "NPC":
+        mutation = CREATE_SESSION_NPCS_MUTATION
+        create_key = "createSessionNpcs"
+        table_name = SESSION_NPCS_TABLE
+        link_input = {
+            "sessionId": session_id,
+            "nPCId": entity_id
+        }
+    elif entity_type == "Location":
+        mutation = CREATE_SESSION_LOCATIONS_MUTATION
+        create_key = "createSessionLocations"
+        table_name = SESSION_LOCATIONS_TABLE
+        link_input = {
+            "sessionId": session_id,
+            "locationId": entity_id
+        }
+    elif entity_type == "Adventurer":
+        mutation = CREATE_SESSION_ADVENTURERS_MUTATION
+        create_key = "createSessionAdventurers"
+        table_name = SESSION_ADVENTURERS_TABLE
+        link_input = {
+            "sessionId": session_id,
+            "adventurerId": entity_id
+        }
+    else:
+        return False
+
+    try:
+        response = execute_graphql_request(mutation, {"input": link_input})
+        created = response.get("data", {}).get(create_key)
+        if created and created.get("id"):
+            link_id = created['id']
+            print(f"✅ Created Session{entity_type}s link (ID: {link_id})")
+            
+            # Update the owner field directly in DynamoDB
+            if owner:
+                update_linker_table_owner(table_name, link_id, owner)
+            
+            return True
+        else:
+            print(f"❌ Failed to create Session{entity_type}s link: {response.get('errors')}")
+            return False
+    except Exception as e:
+        print(f"Exception creating Session{entity_type}s link: {e}")
+        return False
+
+
 def create_entity_in_database(entity_type: str, profile: Dict, session_id: str, campaign_id: str, owner: str) -> Optional[str]:
-    """Creates a new entity in the database with PENDING approval status and links it to the campaign."""
+    """Creates a new entity in the database with PENDING approval status and links it to the campaign and session."""
     generated_at = datetime.utcnow().isoformat() + "Z"
+    
+    # Base input fields common to all entity types
+    base_input = {
+        "name": profile["name"],
+        "description": profile.get("description"),
+        "approvalStatus": "PENDING",
+        "generatedFromSessionId": session_id,
+        "generatedAt": generated_at,
+        "owner": owner,
+    }
     
     if entity_type == "NPC":
         mutation = CREATE_NPC_MUTATION
         create_key = "createNPC"
         create_input = {
-            "name": profile["name"],
+            **base_input,
             "brief": profile.get("brief"),
-            "description": profile.get("description"),
             "type": profile.get("type"),
             "race": profile.get("race"),
-            "approvalStatus": "PENDING",
-            "generatedFromSessionId": session_id,
-            "generatedAt": generated_at,
-            "status": "ACTIVE"
         }
     elif entity_type == "Location":
         mutation = CREATE_LOCATION_MUTATION
         create_key = "createLocation"
-        create_input = {
-            "name": profile["name"],
-            "brief": profile.get("brief"),
-            "description": profile.get("description"),
-            "type": profile.get("type"),
-            "approvalStatus": "PENDING",
-            "generatedFromSessionId": session_id,
-            "generatedAt": generated_at,
-            "status": "ACTIVE"
-        }
+        create_input = base_input.copy()
+        # Location schema doesn't have 'brief' or 'type' fields
     elif entity_type == "Adventurer":
         mutation = CREATE_ADVENTURER_MUTATION
         create_key = "createAdventurer"
         create_input = {
-            "name": profile["name"],
-            "brief": profile.get("brief"),
-            "description": profile.get("description"),
+            **base_input,
             "race": profile.get("race"),
             "class": profile.get("characterClass"),
-            "approvalStatus": "PENDING",
-            "generatedFromSessionId": session_id,
-            "generatedAt": generated_at,
-            "status": "ACTIVE"
         }
+        # Adventurer schema doesn't have 'brief' field
     else:
         return None
 
@@ -434,9 +550,15 @@ def create_entity_in_database(entity_type: str, profile: Dict, session_id: str, 
             
             # Step 2: Create the campaign link
             if campaign_id:
-                link_success = create_campaign_entity_link(entity_type, new_entity_id, campaign_id)
+                link_success = create_campaign_entity_link(entity_type, new_entity_id, campaign_id, owner)
                 if not link_success:
                     print(f"⚠️ Entity created but campaign link failed for {entity_type} {new_entity_id}")
+            
+            # Step 3: Create the session link
+            if session_id:
+                session_link_success = create_session_entity_link(entity_type, new_entity_id, session_id, owner)
+                if not session_link_success:
+                    print(f"⚠️ Entity created but session link failed for {entity_type} {new_entity_id}")
             
             return new_entity_id
         else:

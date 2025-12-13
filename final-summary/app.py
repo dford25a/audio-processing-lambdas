@@ -441,6 +441,61 @@ mutation UpdateSessionLocations($input: UpdateSessionLocationsInput!, $condition
 
 
 
+# --- Push Notification Helper Function ---
+def send_push_notification(user_id: str, title: str, body: str, data: dict = None, channel_id: str = "sessions") -> Dict[str, Any]:
+    """
+    Send a push notification to a user via the AppSync sendPushNotification mutation.
+    
+    Args:
+        user_id: The user's ID (Lambda will fetch their pushToken from DB)
+        title: Notification title
+        body: Notification message
+        data: Additional data to include in the notification (will be JSON stringified)
+        channel_id: Android channel - 'default', 'sessions', 'credits', 'reminders'
+    
+    Returns:
+        The GraphQL response containing success/error information
+    
+    Raises:
+        Exception: If the notification fails to send
+    """
+    mutation = """
+    mutation SendPushNotification($input: SendPushNotificationInput!) {
+      sendPushNotification(input: $input) {
+        success
+        ticketId
+        error
+        message
+      }
+    }
+    """
+    
+    variables = {
+        "input": {
+            "userId": user_id,
+            "title": title,
+            "body": body,
+            "data": json.dumps(data) if data else None,
+            "channelId": channel_id
+        }
+    }
+    
+    response = execute_graphql_request(mutation, variables)
+    
+    # Check for GraphQL errors
+    if "errors" in response:
+        raise Exception(f"Push notification GraphQL error: {response['errors']}")
+    
+    # Check for application-level errors in the response
+    result = response.get("data", {}).get("sendPushNotification", {})
+    if not result.get("success"):
+        error_msg = result.get("error") or result.get("message") or "Unknown error"
+        raise Exception(f"Push notification failed: {error_msg}")
+    
+    print(f"Push notification sent successfully. Ticket ID: {result.get('ticketId')}")
+    return response
+
+
 # --- AppSync Helper Function (API Key Auth) ---
 def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -629,7 +684,7 @@ Response (one line only):"""
         response = openai_client.chat.completions.create(
             model="gpt-5-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,  # Deterministic matching
+            # Note: gpt-5-mini doesn't support temperature parameter, uses default of 1
             max_completion_tokens=50
         )
         
@@ -1463,6 +1518,35 @@ Example Output Structure (follow this JSON format precisely):
             raise Exception("Final session update returned no data")
 
         print(f"Session processing completed successfully")
+
+        # --- Send Push Notification to User (non-blocking) ---
+        # The owner field is in format "UUID:username", we need just the UUID for UserTransactions lookup
+        user_id_for_notification = None
+        if segment_owner_value_for_appsync:
+            # Extract UUID from owner field (format: "UUID:username")
+            user_id_for_notification = segment_owner_value_for_appsync.split(":")[0] if ":" in segment_owner_value_for_appsync else segment_owner_value_for_appsync
+        
+        if user_id_for_notification:
+            try:
+                print(f"Sending push notification to user: {user_id_for_notification}")
+                notification_data = {
+                    "type": "session_complete",
+                    "sessionId": session_id
+                }
+                send_push_notification(
+                    user_id=user_id_for_notification,
+                    title="Session Ready",
+                    body="Your session has been processed and is ready to view!",
+                    data=notification_data,
+                    channel_id="sessions"
+                )
+                print("Push notification sent successfully")
+            except Exception as push_err:
+                # Push notification failure should not fail the entire lambda
+                # User may not have push notifications enabled or registered a token
+                print(f"Warning: Push notification failed (non-critical): {push_err}")
+        else:
+            print(f"Warning: Cannot send push notification - no valid user ID found for session {session_id}")
 
         return {
             'statusCode': 200,

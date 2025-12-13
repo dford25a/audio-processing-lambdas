@@ -70,6 +70,13 @@ locals {
       html_s3_bucket                  = "scribe-share-prod"
       function_suffix                 = "-prod"
       user_transactions_table_name    = "UserTransactions-ejphalvgizhdjbbzuj2vahx7ii-dev"
+      # Linker tables for entity relationships
+      campaign_npcs_table             = "CampaignNpcs-ejphalvgizhdjbbzuj2vahx7ii-dev"
+      campaign_locations_table        = "CampaignLocations-ejphalvgizhdjbbzuj2vahx7ii-dev"
+      campaign_adventurers_table      = "CampaignAdventurers-ejphalvgizhdjbbzuj2vahx7ii-dev"
+      session_npcs_table              = "SessionNpcs-ejphalvgizhdjbbzuj2vahx7ii-dev"
+      session_locations_table         = "SessionLocations-ejphalvgizhdjbbzuj2vahx7ii-dev"
+      session_adventurers_table       = "SessionAdventurers-ejphalvgizhdjbbzuj2vahx7ii-dev"
     },
     dev = {
       s3_bucket                       = "scribe8a8fcf3f6cb14734bce4bd48352f8043acdd4-devsort"  
@@ -77,6 +84,13 @@ locals {
       html_s3_bucket                  = "scribe-share-dev"
       function_suffix                 = "-dev"
       user_transactions_table_name    = "UserTransactions-ebn6wlprprdnvdmndj7wh7ddja-devsort"
+      # Linker tables for entity relationships
+      campaign_npcs_table             = "CampaignNpcs-ebn6wlprprdnvdmndj7wh7ddja-devsort"
+      campaign_locations_table        = "CampaignLocations-ebn6wlprprdnvdmndj7wh7ddja-devsort"
+      campaign_adventurers_table      = "CampaignAdventurers-ebn6wlprprdnvdmndj7wh7ddja-devsort"
+      session_npcs_table              = "SessionNpcs-ebn6wlprprdnvdmndj7wh7ddja-devsort"
+      session_locations_table         = "SessionLocations-ebn6wlprprdnvdmndj7wh7ddja-devsort"
+      session_adventurers_table       = "SessionAdventurers-ebn6wlprprdnvdmndj7wh7ddja-devsort"
     }
   }
 

@@ -18,6 +18,31 @@ data "aws_dynamodb_table" "user_transactions_table" {
   name = local.config.user_transactions_table_name
 }
 
+# Linker tables for entity relationships
+data "aws_dynamodb_table" "campaign_npcs_table" {
+  name = local.config.campaign_npcs_table
+}
+
+data "aws_dynamodb_table" "campaign_locations_table" {
+  name = local.config.campaign_locations_table
+}
+
+data "aws_dynamodb_table" "campaign_adventurers_table" {
+  name = local.config.campaign_adventurers_table
+}
+
+data "aws_dynamodb_table" "session_npcs_table" {
+  name = local.config.session_npcs_table
+}
+
+data "aws_dynamodb_table" "session_locations_table" {
+  name = local.config.session_locations_table
+}
+
+data "aws_dynamodb_table" "session_adventurers_table" {
+  name = local.config.session_adventurers_table
+}
+
 resource "aws_iam_role" "lambda_exec_role" {
   name = "lambda_s3_dynamodb_appsync_role_${var.environment}"
 
@@ -82,7 +107,14 @@ data "aws_iam_policy_document" "lambda_combined_policy_doc" {
       data.aws_dynamodb_table.current_table.arn,
       "${data.aws_dynamodb_table.current_table.arn}/index/*",
       data.aws_dynamodb_table.user_transactions_table.arn,
-      "${data.aws_dynamodb_table.user_transactions_table.arn}/index/*"
+      "${data.aws_dynamodb_table.user_transactions_table.arn}/index/*",
+      # Linker tables for entity relationships
+      data.aws_dynamodb_table.campaign_npcs_table.arn,
+      data.aws_dynamodb_table.campaign_locations_table.arn,
+      data.aws_dynamodb_table.campaign_adventurers_table.arn,
+      data.aws_dynamodb_table.session_npcs_table.arn,
+      data.aws_dynamodb_table.session_locations_table.arn,
+      data.aws_dynamodb_table.session_adventurers_table.arn
     ]
   }
 
