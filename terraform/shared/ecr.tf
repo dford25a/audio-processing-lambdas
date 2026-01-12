@@ -36,3 +36,21 @@ resource "aws_ecr_repository" "faster_whisper" {
     Environment = var.environment
   }
 }
+
+resource "aws_ecr_repository" "whisperx_diarization" {
+  name                 = "whisperx-diarization"
+  image_tag_mutability = "MUTABLE"
+  
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [name]
+  }
+  
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+  
+  tags = {
+    Environment = var.environment
+  }
+}

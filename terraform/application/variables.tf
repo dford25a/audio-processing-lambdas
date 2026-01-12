@@ -61,6 +61,13 @@ variable "discord_webhook_url" {
   sensitive   = true
 }
 
+variable "hf_token" {
+  description = "HuggingFace access token for pyannote diarization models"
+  type        = string
+  sensitive   = true
+  default     = ""  # Optional - only needed for whisperx-diarization Lambda
+}
+
 locals {
   # Environment-specific configuration
   env_config = {

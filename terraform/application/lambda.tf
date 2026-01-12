@@ -15,6 +15,10 @@ data "aws_ecr_repository" "faster_whisper" {
   name = "faster-whisper"
 }
 
+data "aws_ecr_repository" "whisperx_diarization" {
+  name = "whisperx-diarization"
+}
+
 # 1. Define the new combined Lambda Layer Resource
 resource "aws_lambda_layer_version" "python_dependencies_layer" {
   filename            = local.python_dependencies_layer_zip_path
@@ -730,6 +734,39 @@ resource "aws_lambda_function" "update_entity_descriptions" {
       OPENAI_API_KEY  = var.openai_api_key
       APPSYNC_API_URL = var.appsync_api_url
       APPSYNC_API_KEY = var.appsync_api_key
+    }
+  }
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# =========================================================================
+# PROOF OF CONCEPT: whisperx-diarization
+# Transcription with speaker diarization using WhisperX + pyannote-audio
+# CPU-only for Lambda cost optimization - EXPERIMENTAL
+# =========================================================================
+resource "aws_lambda_function" "whisperx_diarization" {
+  function_name = "whisperx-diarization${local.config.function_suffix}"
+  role          = aws_iam_role.lambda_exec_role.arn
+  package_type  = "Image"
+  image_uri     = "${data.aws_ecr_repository.whisperx_diarization.repository_url}:${var.environment}"
+  
+  # Maximum timeout for CPU-based diarization (15 minutes)
+  timeout     = 900
+  # Maximum memory for better CPU performance
+  memory_size = 10240
+  
+  ephemeral_storage {
+    size = 5120  # 5GB for models and audio files
+  }
+
+  environment {
+    variables = {
+      BUCKET_NAME = local.config.s3_bucket
+      ENVIRONMENT = var.environment
+      HF_TOKEN    = var.hf_token  # HuggingFace token for pyannote models
     }
   }
 

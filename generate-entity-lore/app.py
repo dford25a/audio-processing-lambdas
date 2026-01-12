@@ -269,7 +269,8 @@ def update_entity_description(entity_id: str, entity_type: str, highlights: List
 
         highlights_str = "\n".join(f"- {h}" for h in highlights)
         prompt = f"""Update this TTRPG entity's description with new session highlights.
-Weave the highlights naturally into the existing description. Output only the updated description.
+Weave the highlights naturally into the existing description. Output only the updated description. 
+Please keep the description concise, do not be too verbose.
 
 Entity: {entity_name}
 Current Description: "{current_description}"
@@ -305,7 +306,7 @@ def generate_entity_profile(entity_type: str, name: str, highlights: List[str], 
     highlights_str = "\n".join(f"- {h}" for h in highlights)
     
     if entity_type == "NPC":
-        prompt = f"""Generate a TTRPG NPC profile based on session highlights.
+        prompt = f"""Generate a TTRPG NPC profile based on session highlights. Please keep the description concise, do not be too verbose.
 
 NPC Name: {name}
 Session Highlights:
@@ -317,7 +318,7 @@ Additional Context:
 Output a JSON object with:
 - name: The NPC's name
 - brief: A one-sentence summary (max 100 chars)
-- description: A detailed 3-6 sentence description
+- description: A detailed 2-4 sentence description
 - type: NPC type (e.g., "Humanoid", "Beast", "Undead", "Celestial")
 - race: Race if applicable (e.g., "Human", "Elf", "Dwarf") or null
 
@@ -337,14 +338,14 @@ Additional Context:
 Output a JSON object with:
 - name: The location's name
 - brief: A one-sentence summary (max 100 chars)
-- description: A detailed 3-6 sentence description
+- description: A detailed 2-4 sentence description
 - type: Location type (e.g., "City", "Dungeon", "Tavern", "Forest", "Temple")
 
 JSON:"""
         model_class = GeneratedLocation
         
     elif entity_type == "Adventurer":
-        prompt = f"""Generate a TTRPG adventurer profile based on session highlights.
+        prompt = f"""Generate a TTRPG adventurer profile based on session highlights. Please keep the description concise, do not be too verbose.
 
 Adventurer Name: {name}
 Session Highlights:
@@ -356,7 +357,7 @@ Additional Context:
 Output a JSON object with:
 - name: The adventurer's name
 - brief: A one-sentence summary (max 100 chars)
-- description: A detailed 3-6 sentence description
+- description: A detailed 2-4 sentence description
 - race: Race (e.g., "Human", "Elf", "Dwarf", "Halfling") or null
 - characterClass: Array of classes (e.g., ["Fighter"], ["Wizard", "Rogue"]) or null
 
