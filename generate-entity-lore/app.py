@@ -58,7 +58,6 @@ class GeneratedAdventurer(BaseModel):
     brief: str = Field(description="A one-sentence summary of the adventurer")
     description: str = Field(description="A detailed 3-6 sentence description")
     race: Optional[str] = Field(None, description="Adventurer's race")
-    characterClass: Optional[List[str]] = Field(None, description="Character class(es)")
 
 
 # --- GraphQL Queries and Mutations ---
@@ -358,8 +357,7 @@ Output a JSON object with:
 - name: The adventurer's name
 - brief: A one-sentence summary (max 100 chars)
 - description: A detailed 2-4 sentence description
-- race: Race (e.g., "Human", "Elf", "Dwarf", "Halfling") or null
-- characterClass: Array of classes (e.g., ["Fighter"], ["Wizard", "Rogue"]) or null
+- race: Race (e.g., "Human", "Elf", "Dwarf", "Halfling") or null if unknown
 
 JSON:"""
         model_class = GeneratedAdventurer
@@ -535,9 +533,8 @@ def create_entity_in_database(entity_type: str, profile: Dict, session_id: str, 
         create_input = {
             **base_input,
             "race": profile.get("race"),
-            "class": profile.get("characterClass"),
+            # Don't auto-assign class - let users set this manually
         }
-        # Adventurer schema doesn't have 'brief' field
     else:
         return None
 
@@ -626,7 +623,7 @@ def lambda_handler(event, context):
         errors = []
         
         # --- Update Existing Entities ---
-        # Aggregate highlights by ID
+        # Aggregate highlights by ID and create session links
         for entity_type, entities, result_key in [
             ("Adventurer", existing_adventurers, "adventurers"),
             ("NPC", existing_npcs, "npcs"),
@@ -636,13 +633,19 @@ def lambda_handler(event, context):
             for entity in entities:
                 if entity.get("id"):
                     highlights_by_id.setdefault(entity["id"], []).extend(entity.get("highlights", []))
-            
+
             for entity_id, highlights in highlights_by_id.items():
                 unique_highlights = list(dict.fromkeys(highlights))
                 if update_entity_description(entity_id, entity_type, unique_highlights, debug):
                     updated_entities[result_key].append(entity_id)
                 else:
                     errors.append(f"Failed to update {entity_type} {entity_id}")
+
+                # Create session link for existing entity (records appearance in this session)
+                if session_id:
+                    session_link_success = create_session_entity_link(entity_type, entity_id, session_id, owner)
+                    if not session_link_success:
+                        print(f"⚠️ Failed to create session link for existing {entity_type} {entity_id}")
         
         # --- Create New Entities ---
         for entity_type, new_entities, result_key in [

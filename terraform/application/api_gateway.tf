@@ -319,6 +319,92 @@ resource "aws_api_gateway_integration_response" "session_chat_options_integratio
 }
 
 #################################
+# revise-summary-async endpoint
+#################################
+
+# API Gateway resource path ("/revise-summary-async")
+resource "aws_api_gateway_resource" "revise_summary_async_resource" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  parent_id   = aws_api_gateway_rest_api.summary_api.root_resource_id
+  path_part   = "revise-summary-async"
+}
+
+# API Gateway method (POST) with Cognito authorization
+resource "aws_api_gateway_method" "revise_summary_async_post" {
+  rest_api_id   = aws_api_gateway_rest_api.summary_api.id
+  resource_id   = aws_api_gateway_resource.revise_summary_async_resource.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito_authorizer.id
+}
+
+# Add OPTIONS method for CORS support
+resource "aws_api_gateway_method" "revise_summary_async_options" {
+  rest_api_id   = aws_api_gateway_rest_api.summary_api.id
+  resource_id   = aws_api_gateway_resource.revise_summary_async_resource.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+# API Gateway integration with Lambda
+resource "aws_api_gateway_integration" "revise_summary_async_lambda_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.summary_api.id
+  resource_id             = aws_api_gateway_resource.revise_summary_async_resource.id
+  http_method             = aws_api_gateway_method.revise_summary_async_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.revise_summary_async.invoke_arn
+}
+
+# OPTIONS method integration for CORS
+resource "aws_api_gateway_integration" "revise_summary_async_options_integration" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.revise_summary_async_resource.id
+  http_method = aws_api_gateway_method.revise_summary_async_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+# Method response for OPTIONS method
+resource "aws_api_gateway_method_response" "revise_summary_async_options_200" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.revise_summary_async_resource.id
+  http_method = aws_api_gateway_method.revise_summary_async_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true,
+    "method.response.header.Access-Control-Allow-Methods" = true,
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+# Integration response for OPTIONS method
+resource "aws_api_gateway_integration_response" "revise_summary_async_options_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.revise_summary_async_resource.id
+  http_method = aws_api_gateway_method.revise_summary_async_options.http_method
+  status_code = aws_api_gateway_method_response.revise_summary_async_options_200.status_code
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'",
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+
+  response_templates = {
+    "application/json" = ""
+  }
+
+  depends_on = [
+    aws_api_gateway_integration.revise_summary_async_options_integration
+  ]
+}
+
+#################################
 # NEW: campaign-chat endpoint
 #################################
 
@@ -424,6 +510,15 @@ resource "aws_lambda_permission" "api_gateway_revise_summary_lambda" {
   function_name = aws_lambda_function.revise_summary.function_name # Ensure this lambda resource exists
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_api_gateway_rest_api.summary_api.execution_arn}/*/${aws_api_gateway_method.revise_summary_post.http_method}${aws_api_gateway_resource.revise_summary_resource.path}"
+}
+
+# Allow API Gateway to invoke the revise-summary-async Lambda function
+resource "aws_lambda_permission" "api_gateway_revise_summary_async_lambda" {
+  statement_id  = "AllowExecutionFromAPIGateway_ReviseSummaryAsync"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.revise_summary_async.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.summary_api.execution_arn}/*/${aws_api_gateway_method.revise_summary_async_post.http_method}${aws_api_gateway_resource.revise_summary_async_resource.path}"
 }
 
 # Allow API Gateway to invoke the session-chat Lambda function
@@ -675,6 +770,15 @@ resource "aws_api_gateway_deployment" "summary_api_deployment" {
       aws_api_gateway_method_response.revise_summary_options_200.id,
       aws_api_gateway_integration_response.revise_summary_options_integration_response.id,
 
+      # Revise Summary Async Resources
+      aws_api_gateway_resource.revise_summary_async_resource.id,
+      aws_api_gateway_method.revise_summary_async_post.id,
+      aws_api_gateway_method.revise_summary_async_options.id,
+      aws_api_gateway_integration.revise_summary_async_lambda_integration.id,
+      aws_api_gateway_integration.revise_summary_async_options_integration.id,
+      aws_api_gateway_method_response.revise_summary_async_options_200.id,
+      aws_api_gateway_integration_response.revise_summary_async_options_integration_response.id,
+
       # Session Chat Resources
       aws_api_gateway_resource.session_chat_resource.id,
       aws_api_gateway_method.session_chat_post.id,
@@ -749,6 +853,11 @@ output "start_summary_api_url" {
 output "revise_summary_api_url" {
   value       = "${aws_api_gateway_stage.api_stage.invoke_url}${aws_api_gateway_resource.revise_summary_resource.path}"
   description = "URL for invoking the revise-summary endpoint"
+}
+
+output "revise_summary_async_api_url" {
+  value       = "${aws_api_gateway_stage.api_stage.invoke_url}${aws_api_gateway_resource.revise_summary_async_resource.path}"
+  description = "URL for invoking the revise-summary-async endpoint"
 }
 
 output "session_chat_api_url" {

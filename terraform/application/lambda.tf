@@ -15,9 +15,10 @@ data "aws_ecr_repository" "faster_whisper" {
   name = "faster-whisper"
 }
 
-data "aws_ecr_repository" "whisperx_diarization" {
-  name = "whisperx-diarization"
-}
+# Temporarily disabled - container doesn't build
+# data "aws_ecr_repository" "whisperx_diarization" {
+#   name = "whisperx-diarization"
+# }
 
 # 1. Define the new combined Lambda Layer Resource
 resource "aws_lambda_layer_version" "python_dependencies_layer" {
@@ -326,6 +327,44 @@ resource "aws_lambda_function" "revise_summary" {
   }
 }
 
+# =========================================================================
+# NEW ASYNC LAMBDA: revise-summary-async
+# This is the new asynchronous version of the revise-summary function.
+# NOTE: You will need to create a zip file for this function before applying.
+# e.g., `(cd ../../revise-summary-async && zip -r ../terraform/application/revise-summary-async.zip .)`
+# =========================================================================
+resource "aws_lambda_function" "revise_summary_async" {
+  function_name = "revise-summary-async${local.config.function_suffix}"
+  handler       = "app.lambda_handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 300 # 5 minute timeout for the background worker
+  memory_size   = 512
+
+  filename         = "${path.module}/revise-summary-async.zip"
+  source_code_hash = filebase64sha256("${path.module}/revise-summary-async.zip")
+
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      BUCKET_NAME                 = local.config.s3_bucket
+      ENVIRONMENT                 = var.environment
+      OPENAI_API_KEY              = var.openai_api_key
+      APPSYNC_API_URL             = var.appsync_api_url
+      APPSYNC_API_KEY             = var.appsync_api_key
+      S3_SOURCE_TRANSCRIPT_PREFIX = "public/transcripts/full"
+      S3_METADATA_PREFIX          = "public/session-metadata"
+    }
+  }
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
 # Lambda function for session-chat
 resource "aws_lambda_function" "session_chat" {
   function_name = "session-chat${local.config.function_suffix}"
@@ -539,6 +578,28 @@ resource "aws_iam_role_policy_attachment" "lambda_bedrock_access" {
   policy_arn = aws_iam_policy.bedrock_access_policy.arn
 }
 
+resource "aws_iam_policy" "lambda_invoke_policy" {
+  name        = "LambdaInvokePolicy-${var.environment}"
+  description = "Allows Lambda functions to invoke other Lambda functions, required for async patterns."
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = "lambda:InvokeFunction",
+        Resource = "arn:aws:lambda:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:function:*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_invoke_access" {
+  role       = aws_iam_role.lambda_exec_role.name
+  policy_arn = aws_iam_policy.lambda_invoke_policy.arn
+}
+
+
 resource "aws_lambda_function" "html_to_url" {
   function_name = "html-to-url${local.config.function_suffix}"
   handler       = "app.handler"
@@ -743,34 +804,39 @@ resource "aws_lambda_function" "update_entity_descriptions" {
 }
 
 # =========================================================================
-# PROOF OF CONCEPT: whisperx-diarization
-# Transcription with speaker diarization using WhisperX + pyannote-audio
-# CPU-only for Lambda cost optimization - EXPERIMENTAL
+# Speaker Diarization Lambda (Faster-Whisper + Sherpa-ONNX)
+# Lightweight CPU-only diarization using ONNX Runtime
+# Architecture: ARM64 (Graviton2) for ~20% cost savings
 # =========================================================================
-resource "aws_lambda_function" "whisperx_diarization" {
-  function_name = "whisperx-diarization${local.config.function_suffix}"
-  role          = aws_iam_role.lambda_exec_role.arn
-  package_type  = "Image"
-  image_uri     = "${data.aws_ecr_repository.whisperx_diarization.repository_url}:${var.environment}"
-  
-  # Maximum timeout for CPU-based diarization (15 minutes)
-  timeout     = 900
-  # Maximum memory for better CPU performance
-  memory_size = 10240
-  
-  ephemeral_storage {
-    size = 5120  # 5GB for models and audio files
-  }
-
-  environment {
-    variables = {
-      BUCKET_NAME = local.config.s3_bucket
-      ENVIRONMENT = var.environment
-      HF_TOKEN    = var.hf_token  # HuggingFace token for pyannote models
-    }
-  }
-
-  tags = {
-    Environment = var.environment
-  }
-}
+# Temporarily disabled - container doesn't build
+# resource "aws_lambda_function" "whisperx_diarization" {
+#   function_name = "whisperx-diarization${local.config.function_suffix}"
+#   role          = aws_iam_role.lambda_exec_role.arn
+#   package_type  = "Image"
+#   image_uri     = "${data.aws_ecr_repository.whisperx_diarization.repository_url}:${var.environment}"
+#
+#   # ARM64 architecture for Graviton2 (cost savings)
+#   architectures = ["arm64"]
+#
+#   # Maximum timeout for CPU-based diarization (15 minutes)
+#   timeout     = 900
+#   # 4GB memory - good balance of performance and cost
+#   # Higher memory = more CPU power in Lambda
+#   memory_size = 4096
+#
+#   ephemeral_storage {
+#     size = 512  # Default is sufficient - models baked into image
+#   }
+#
+#   environment {
+#     variables = {
+#       BUCKET_NAME = local.config.s3_bucket
+#       ENVIRONMENT = var.environment
+#       HF_TOKEN    = var.hf_token  # Required for pyannote.audio models
+#     }
+#   }
+#
+#   tags = {
+#     Environment = var.environment
+#   }
+# }

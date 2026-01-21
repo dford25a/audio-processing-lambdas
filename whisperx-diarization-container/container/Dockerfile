@@ -1,82 +1,67 @@
 # syntax=docker/dockerfile:1
-
-# We use a Debian base so that ffmpeg + development headers are available,
-# then run on Lambda using the AWS Lambda Runtime Interface Client (RIC).
 #
-# Docs: https://docs.aws.amazon.com/lambda/latest/dg/images-create.html
+# Speaker Diarization Lambda Container
+# Uses Faster-Whisper (int8) + Pyannote.audio for diarization
+# Architecture: ARM64 (Graviton2) for cost savings
+#
 
-# --- Builder stage ---
-FROM python:3.10-slim-bookworm AS builder
+# Use the official AWS Lambda Python 3.10 base image for ARM64
+FROM public.ecr.aws/lambda/python:3.10-arm64
 
-ENV DEBIAN_FRONTEND=noninteractive
+# Install system dependencies using yum (Amazon Linux 2)
+# - wget/tar/bzip2: for downloading and extracting models
+# - xz: for extracting ffmpeg static build
+# - libsndfile: required for soundfile
+# - gcc/gcc-c++/make: required for building matplotlib and other packages
+RUN yum update -y && \
+    yum install -y wget tar bzip2 xz libsndfile git gcc gcc-c++ make && \
+    yum clean all && \
+    rm -rf /var/cache/yum
 
-# System deps needed for:
-# - ffmpeg runtime + headers (for PyAV)
-# - compiling wheels where needed
-# - git (some deps may fetch from VCS)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    libavformat-dev \
-    libavcodec-dev \
-    libavdevice-dev \
-    libavutil-dev \
-    libavfilter-dev \
-    libswscale-dev \
-    libswresample-dev \
-    pkg-config \
-    gcc \
-    g++ \
-    git \
-  && rm -rf /var/lib/apt/lists/*
+# Install ffmpeg from static build (not in Amazon Linux repos)
+RUN wget -q https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz && \
+    tar xf ffmpeg-release-arm64-static.tar.xz && \
+    mv ffmpeg-*-arm64-static/ffmpeg /usr/local/bin/ && \
+    mv ffmpeg-*-arm64-static/ffprobe /usr/local/bin/ && \
+    rm -rf ffmpeg-*
 
-# Upgrade pip tooling
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
-# Install PyTorch CPU wheels directly to system Python
+# Install PyTorch CPU-only (ARM64)
+# Using the lightweight CPU-only version to minimize size
 RUN pip install --no-cache-dir \
-    torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://download.pytorch.org/whl/cpu
+    torch==2.1.2 --index-url https://download.pytorch.org/whl/cpu
 
-# Install whisperx + diarization deps directly to system Python
-# Pin av to a version that provides prebuilt wheels to avoid compiling.
-# (Compiling av is slow and can require extra toolchains.)
+# Install Python dependencies
+# Key packages:
+# - faster-whisper: Lightweight transcription with int8 quantization
+# - pyannote.audio: Speaker diarization (PyTorch-based)
+# - soundfile: Audio file I/O
+# - numpy: Numerical operations
+# - boto3: AWS SDK
 RUN pip install --no-cache-dir \
     "numpy<2.0" \
-    "onnxruntime==1.16.3" \
-    "av==11.0.0" \
-    "whisperx==3.1.5" \
-    "pyannote.audio>=3.1" \
-    boto3 \
-    awslambdaric
+    "huggingface-hub>=0.21,<0.25" \
+    "faster-whisper>=1.0.0,<1.1.0" \
+    "pyannote.audio>=3.1.0" \
+    "soundfile>=0.12.0" \
+    "boto3>=1.34.0"
 
-# --- Runtime stage ---
-FROM python:3.10-slim-bookworm
+# --- Model Cache Directories ---
+ENV FASTER_WHISPER_CACHE_DIR="/opt/models/faster-whisper"
+ENV HF_HOME="/opt/models/huggingface"
 
-ENV DEBIAN_FRONTEND=noninteractive
+# Create model directories
+RUN mkdir -p ${FASTER_WHISPER_CACHE_DIR} ${HF_HOME}
 
-# ffmpeg runtime is required because your handler loads audio from mp3/etc.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-  && rm -rf /var/lib/apt/lists/*
+# --- Download Faster-Whisper Model ---
+# Pre-download the small.en model with int8 quantization
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('small.en', device='cpu', compute_type='int8', download_root='${FASTER_WHISPER_CACHE_DIR}')"
 
-# Copy Python packages from builder (system site-packages)
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# Note: Pyannote models require HuggingFace token and will be downloaded at runtime
+# Set HF_TOKEN environment variable in Lambda configuration
 
-# Set cache directories to a location in the image (read-only at runtime)
-ENV HF_HOME="/usr/local/huggingface-cache"
-ENV WHISPERX_CACHE_DIR="/usr/local/whisperx-models-cache"
+# Copy application code
+WORKDIR ${LAMBDA_TASK_ROOT}
+COPY app.py ${LAMBDA_TASK_ROOT}/
 
-# Create cache directories
-RUN mkdir -p ${HF_HOME} ${WHISPERX_CACHE_DIR}
-
-# Pre-download the faster-whisper model during build (without VAD which has URL issues)
-# The VAD model will be downloaded at runtime to /tmp
-RUN python -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8', download_root='${WHISPERX_CACHE_DIR}')"
-
-# Copy your application code
-WORKDIR /var/task
-COPY app.py /var/task/app.py
-
-# Lambda entrypoint via RIC
-ENTRYPOINT ["python", "-m", "awslambdaric"]
+# Lambda handler
 CMD ["app.handler"]

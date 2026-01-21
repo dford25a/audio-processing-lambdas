@@ -13,6 +13,9 @@ terraform/application/terraform.tfstate.backup
 terraform/shared/terraform.tfstate
 terraform/shared/terraform.tfstate.backup
 
+docs/
+graphql_schema.txt
+
 # Generated zip archives (Lambda deployment packages)
 *.zip
 

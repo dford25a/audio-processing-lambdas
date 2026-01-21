@@ -24,6 +24,7 @@ DEFAULT_LAMBDAS=(
   "combine-text-segments"
   "final-summary"
   "revise-summary"
+  "revise-summary-async"
   "session-chat"
   "campaign-chat"
   "create-campaign-index"
