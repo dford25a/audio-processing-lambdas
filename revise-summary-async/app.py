@@ -311,7 +311,11 @@ def handle_background_rewrite(event, context, debug: bool = True):
         if not original_segments:
             raise ValueError(f"No segments found for session {session_id}.")
 
-        original_segments.sort(key=lambda s: s.get('index') or float('inf'))
+        original_segments.sort(key=lambda s: s.get('index') if s.get('index') is not None else float('inf'))
+        if debug:
+            print(f"Fetched and sorted {len(original_segments)} segments.")
+            print(f"Segment indices: {[s.get('index') for s in original_segments]}")
+            print(f"Segment IDs: {[s.get('id') for s in original_segments]}")
 
         # 2. Fetch Transcript & Metadata
         filename_stem = f"campaign{campaign_id}Session{session_id}"

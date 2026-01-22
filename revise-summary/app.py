@@ -337,8 +337,10 @@ def lambda_handler(event, context):
             return idx
 
         original_segments_from_appsync.sort(key=get_segment_index)
-        if debug: 
-            print(f"Fetched and sorted {len(original_segments_from_appsync)} segments. Indices: {[s.get('index') for s in original_segments_from_appsync]}")
+        if debug:
+            print(f"Fetched and sorted {len(original_segments_from_appsync)} segments.")
+            print(f"Segment indices: {[s.get('index') for s in original_segments_from_appsync]}")
+            print(f"Segment IDs: {[s.get('id') for s in original_segments_from_appsync]}")
 
 
         # 3. Fetch Original Transcript Text from S3

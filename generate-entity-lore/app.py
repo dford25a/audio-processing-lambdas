@@ -514,8 +514,10 @@ def create_entity_highlight_segment(entity_type: str, entity_id: str, entity_nam
         return True  # No highlights to store
 
     # Build the segment input with the appropriate entity link field
+    # NOTE: Do NOT set sessionSegmentsId here - we only want these segments linked to
+    # the entity (adventurer/npc/location), not to the session. If sessionSegmentsId
+    # is set, these highlights will show up on the session summary page.
     segment_input = {
-        "sessionSegmentsId": session_id,
         "title": entity_name,
         "description": highlights,
         "owner": owner
