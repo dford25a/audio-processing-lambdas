@@ -97,6 +97,46 @@ mutation UpdateLocation($input: UpdateLocationInput!) {
 }
 """
 
+# --- Session Link List Queries (for duplicate checking) ---
+LIST_SESSION_ADVENTURERS_QUERY = """
+query ListSessionAdventurers($filter: ModelSessionAdventurersFilterInput, $limit: Int, $nextToken: String) {
+  listSessionAdventurers(filter: $filter, limit: $limit, nextToken: $nextToken) {
+    items {
+      id
+      sessionId
+      adventurerId
+    }
+    nextToken
+  }
+}
+"""
+
+LIST_SESSION_NPCS_QUERY = """
+query ListSessionNpcs($filter: ModelSessionNpcsFilterInput, $limit: Int, $nextToken: String) {
+  listSessionNpcs(filter: $filter, limit: $limit, nextToken: $nextToken) {
+    items {
+      id
+      sessionId
+      nPCId
+    }
+    nextToken
+  }
+}
+"""
+
+LIST_SESSION_LOCATIONS_QUERY = """
+query ListSessionLocations($filter: ModelSessionLocationsFilterInput, $limit: Int, $nextToken: String) {
+  listSessionLocations(filter: $filter, limit: $limit, nextToken: $nextToken) {
+    items {
+      id
+      sessionId
+      locationId
+    }
+    nextToken
+  }
+}
+"""
+
 CREATE_NPC_MUTATION = """
 mutation CreateNPC($input: CreateNPCInput!) {
   createNPC(input: $input) {
@@ -141,6 +181,23 @@ mutation CreateAdventurer($input: CreateAdventurerInput!) {
     approvalStatus
     generatedFromSessionId
     generatedAt
+    owner
+    _version
+  }
+}
+"""
+
+# --- Segment Mutation ---
+CREATE_SEGMENT_MUTATION = """
+mutation CreateSegment($input: CreateSegmentInput!) {
+  createSegment(input: $input) {
+    id
+    title
+    description
+    sessionSegmentsId
+    adventurerSegmentsId
+    locationSegmentsId
+    nPCSegmentsId
     owner
     _version
   }
@@ -337,7 +394,7 @@ Additional Context:
 Output a JSON object with:
 - name: The location's name
 - brief: A one-sentence summary (max 100 chars)
-- description: A detailed 2-4 sentence description
+- description: A detailed 1-3 sentence description
 - type: Location type (e.g., "City", "Dungeon", "Tavern", "Forest", "Temple")
 
 JSON:"""
@@ -356,7 +413,7 @@ Additional Context:
 Output a JSON object with:
 - name: The adventurer's name
 - brief: A one-sentence summary (max 100 chars)
-- description: A detailed 2-4 sentence description
+- description: A detailed 1-3 sentence description
 - race: Race (e.g., "Human", "Elf", "Dwarf", "Halfling") or null if unknown
 
 JSON:"""
@@ -450,8 +507,92 @@ def create_campaign_entity_link(entity_type: str, entity_id: str, campaign_id: s
         return False
 
 
+def create_entity_highlight_segment(entity_type: str, entity_id: str, entity_name: str,
+                                     highlights: List[str], session_id: str, owner: str) -> bool:
+    """Creates a Segment record to store entity highlights for a session."""
+    if not highlights:
+        return True  # No highlights to store
+
+    # Build the segment input with the appropriate entity link field
+    segment_input = {
+        "sessionSegmentsId": session_id,
+        "title": entity_name,
+        "description": highlights,
+        "owner": owner
+    }
+
+    # Set the correct entity link field
+    if entity_type == "Adventurer":
+        segment_input["adventurerSegmentsId"] = entity_id
+    elif entity_type == "NPC":
+        segment_input["nPCSegmentsId"] = entity_id
+    elif entity_type == "Location":
+        segment_input["locationSegmentsId"] = entity_id
+    else:
+        print(f"Unknown entity type: {entity_type}")
+        return False
+
+    try:
+        response = execute_graphql_request(CREATE_SEGMENT_MUTATION, {"input": segment_input})
+        created = response.get("data", {}).get("createSegment")
+        if created and created.get("id"):
+            print(f"✅ Created highlight segment for {entity_type} '{entity_name}' (Segment ID: {created['id']})")
+            return True
+        else:
+            print(f"❌ Failed to create highlight segment for {entity_type} '{entity_name}': {response.get('errors')}")
+            return False
+    except Exception as e:
+        print(f"Exception creating highlight segment for {entity_type} '{entity_name}': {e}")
+        return False
+
+
+def check_session_link_exists(entity_type: str, entity_id: str, session_id: str) -> bool:
+    """Checks if a session-entity link already exists to prevent duplicates."""
+    if entity_type == "NPC":
+        query = LIST_SESSION_NPCS_QUERY
+        list_key = "listSessionNpcs"
+        entity_id_field = "nPCId"
+    elif entity_type == "Location":
+        query = LIST_SESSION_LOCATIONS_QUERY
+        list_key = "listSessionLocations"
+        entity_id_field = "locationId"
+    elif entity_type == "Adventurer":
+        query = LIST_SESSION_ADVENTURERS_QUERY
+        list_key = "listSessionAdventurers"
+        entity_id_field = "adventurerId"
+    else:
+        return False
+
+    try:
+        # Query for links matching this session
+        variables = {
+            "filter": {"sessionId": {"eq": session_id}},
+            "limit": 100
+        }
+        response = execute_graphql_request(query, variables)
+        items = response.get("data", {}).get(list_key, {}).get("items", [])
+
+        # Check if any existing link has this entity ID
+        for item in items:
+            if item.get(entity_id_field) == entity_id:
+                return True
+        return False
+    except Exception as e:
+        print(f"Error checking for existing session link: {e}")
+        # On error, return False to allow creation attempt (which may fail if duplicate)
+        return False
+
+
 def create_session_entity_link(entity_type: str, entity_id: str, session_id: str, owner: str) -> bool:
-    """Creates a link record between a session and an entity (NPC, Location, or Adventurer)."""
+    """Creates a link record between a session and an entity (NPC, Location, or Adventurer).
+
+    Checks for existing links first to prevent duplicates.
+    """
+    # Check if link already exists
+    if check_session_link_exists(entity_type, entity_id, session_id):
+        print(f"ℹ️ Session{entity_type}s link already exists for entity {entity_id} in session {session_id}")
+        return True  # Return True since the link exists (not an error)
+
     if entity_type == "NPC":
         mutation = CREATE_SESSION_NPCS_MUTATION
         create_key = "createSessionNpcs"
@@ -485,11 +626,11 @@ def create_session_entity_link(entity_type: str, entity_id: str, session_id: str
         if created and created.get("id"):
             link_id = created['id']
             print(f"✅ Created Session{entity_type}s link (ID: {link_id})")
-            
+
             # Update the owner field directly in DynamoDB
             if owner:
                 update_linker_table_owner(table_name, link_id, owner)
-            
+
             return True
         else:
             print(f"❌ Failed to create Session{entity_type}s link: {response.get('errors')}")
@@ -629,13 +770,19 @@ def lambda_handler(event, context):
             ("NPC", existing_npcs, "npcs"),
             ("Location", existing_locations, "locations")
         ]:
+            # Build maps: id -> highlights and id -> name
             highlights_by_id: Dict[str, List[str]] = {}
+            name_by_id: Dict[str, str] = {}
             for entity in entities:
                 if entity.get("id"):
                     highlights_by_id.setdefault(entity["id"], []).extend(entity.get("highlights", []))
+                    if entity.get("name"):
+                        name_by_id[entity["id"]] = entity["name"]
 
             for entity_id, highlights in highlights_by_id.items():
                 unique_highlights = list(dict.fromkeys(highlights))
+                entity_name = name_by_id.get(entity_id, "Unknown")
+
                 if update_entity_description(entity_id, entity_type, unique_highlights, debug):
                     updated_entities[result_key].append(entity_id)
                 else:
@@ -646,6 +793,10 @@ def lambda_handler(event, context):
                     session_link_success = create_session_entity_link(entity_type, entity_id, session_id, owner)
                     if not session_link_success:
                         print(f"⚠️ Failed to create session link for existing {entity_type} {entity_id}")
+
+                # Create highlight segment for existing entity
+                if session_id and unique_highlights:
+                    create_entity_highlight_segment(entity_type, entity_id, entity_name, unique_highlights, session_id, owner)
         
         # --- Create New Entities ---
         for entity_type, new_entities, result_key in [
@@ -676,6 +827,9 @@ def lambda_handler(event, context):
                         "name": name,
                         "approvalStatus": "PENDING"
                     })
+                    # Create highlight segment for new entity
+                    if session_id and highlights:
+                        create_entity_highlight_segment(entity_type, new_id, name, highlights, session_id, owner)
                 else:
                     errors.append(f"Failed to create {entity_type} {name}")
         
