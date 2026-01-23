@@ -23,6 +23,79 @@ if not OPENAI_API_KEY_FROM_ENV:
 s3_client = boto3.client("s3", region_name=AWS_REGION)
 openai_client = OpenAI(api_key=OPENAI_API_KEY_FROM_ENV)
 
+# --- Image Style Lookup (must match final-summary/app.py exactly) ---
+image_format_lookup = {
+    "fantasy": {
+        "name": "Default",
+        "description": "Classic artistic style",
+        "longDescription": "A semi-photorealistic fantasy style with bold, directional lighting, rich color saturation, and cinematic composition. Realistic textures, lifelike character detail, and a polished finish create a grounded yet visually striking world with a heightened sense of drama and scale."
+    },
+    "dark-fantasy": {
+        "name": "Dark fantasy",
+        "description": "Dark fantasy style",
+        "longDescription": "A cinematic stylized realism with rich color depth and dynamic lighting. The palette uses vibrant yet grounded tones with strong value contrast to enhance atmosphere and emotional impact, while preserving detail in shadow and highlight areas. Lighting is volumetric and directional, often cutting through mist, smoke, or haze to reveal depth and form. The overall aesthetic is dark and serious in tone — evoking tension, mystery, and scale — yet maintains enough visibility and texture for every element to feel tangible and alive. The mood is dramatic, immersive, and painterly, blending realistic detail with heightened color and light expression."
+    },
+    "watercolor": {
+        "name": "Watercolor",
+        "description": "detailed watercolor style",
+        "longDescription": "A refined watercolor style that preserves the medium's softness and translucency while enhancing structure and depth. Colors remain fluid and luminous, but with richer pigment, sharper contrast, and defined brush textures that retain fine detail without losing the organic, hand-painted feel."
+    },
+    "Sketchbook": {
+        "name": "Sketchbook",
+        "description": "Sketchbook style",
+        "longDescription": "A traditional pen-and-ink illustration style with muted, earthy tones and fine crosshatching, evoking the look of a classic fantasy storybook or vintage map."
+    },
+    "photo-releastic": {
+        "name": "Photo realistic",
+        "description": "Photo realistic style",
+        "longDescription": "A lifelike, cinematic style with natural lighting, vibrant colors, sharp detail, and dramatic depth of field."
+    },
+    "cyberpunk": {
+        "name": "Cyberpunk",
+        "description": "Luminous Cyber Noir",
+        "longDescription": "A cinematic, futuristic rendering style defined by luminous contrast and rich neon hues of violet, cyan, and magenta, balanced against cool, atmospheric shadows. Lighting glows through haze and reflection, creating a moody yet clearly legible composition with preserved midtone detail and visible texture. The overall look feels immersive, stylized, and vividly illuminated without becoming overly dark."
+    },
+    "retro-vibrant": {
+        "name": "Retro illustration",
+        "description": "Retro illustration style",
+        "longDescription": "A bold, 1980s fantasy style with vivid colors, heroic poses, and painterly textures."
+    },
+    "graphic-novel": {
+        "name": "Graphic Novel",
+        "description": "Graphic novel style",
+        "longDescription": "A clean, inked comic style with vibrant colors, balanced outlines, and cinematic composition."
+    },
+    "ink-sketch": {
+        "name": "B&W ink sketch",
+        "description": "B&W ink sketch style",
+        "longDescription": "A rough, black-and-white ink style with scratchy lines, heavy cross-hatching, and surreal fantasy elements."
+    },
+    "retro": {
+        "name": "Retro video game",
+        "description": "Retro video game style",
+        "longDescription": "A pixelated, 8-bit style with chunky forms, limited palettes, and nostalgic charm."
+    },
+    "3d-animation": {
+        "name": "3D Animation",
+        "description": "3D animation style",
+        "longDescription": "A polished 3D style with stylized characters, expressive faces, and cinematic lighting."
+    },
+    "anime": {
+        "name": "Anime",
+        "description": "Anime style",
+        "longDescription": "A vibrant, cel-shaded style with dynamic poses, clean lines, and painterly backgrounds."
+    },
+    "studio-ghibli": {
+        "name": "Studio Ghibli",
+        "description": "Studio Ghibli style",
+        "longDescription": "A Studio Ghibli film scene"
+    },
+    "painting": {
+        "name": "Painterly",
+        "description": "Painting style",
+        "longDescription": "A painterly, realistic style with warm lighting, rich detail, and heroic figures in vast, mythic landscapes."
+    }
+}
 
 def generate_and_upload_image(
     prompt_suffix: str,
@@ -182,7 +255,31 @@ def lambda_handler(event, context):
             }
         
         img_quality = image_settings.get("quality", "medium")
-        img_style_prompt = image_settings.get("stylePrompt", "A fantasy illustration")
+
+        # Style can be either a key (e.g., "cyberpunk") or the full longDescription text
+        style_input = image_settings.get("stylePrompt")
+        if not style_input:
+            raise ValueError("imageSettings.stylePrompt is required but was not provided")
+
+        # Check if it's a known key first
+        if style_input in image_format_lookup:
+            img_style_prompt = image_format_lookup[style_input]["longDescription"]
+        else:
+            # Check if it matches any longDescription value (sent by generate-narrative-summary)
+            matched = False
+            for style_data in image_format_lookup.values():
+                if style_input == style_data["longDescription"]:
+                    img_style_prompt = style_input
+                    matched = True
+                    break
+
+            if not matched:
+                # Use as-is if it looks like a valid prompt (reasonably long text)
+                if len(style_input) > 20:
+                    print(f"Using custom style prompt: {style_input[:50]}...")
+                    img_style_prompt = style_input
+                else:
+                    raise ValueError(f"Invalid stylePrompt '{style_input}'. Must be a valid style key or description.")
         
         # Read narrative summary from S3
         print(f"Reading narrative summary: {narrative_summary_key}")
@@ -245,14 +342,6 @@ def lambda_handler(event, context):
         error_message = str(e)
         print(f"ERROR: {error_message}")
         traceback.print_exc()
-        
-        return {
-            "statusCode": 500,
-            "error": error_message,
-            "imageKeys": [],
-            "primaryImage": None,
-            # Passthrough fields for error handling
-            "sessionId": event.get("sessionId"),
-            "userTransactionsTransactionsId": event.get("userTransactionsTransactionsId"),
-            "creditsToRefund": event.get("creditsToRefund")
-        }
+
+        # Re-raise the exception so Step Functions catches it and routes to error handler
+        raise

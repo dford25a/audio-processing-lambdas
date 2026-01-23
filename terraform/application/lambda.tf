@@ -110,12 +110,15 @@ resource "aws_lambda_function" "post_cognito_confirmation" {
   source_code_hash = filebase64sha256("${path.module}/post-cognito-confirmation.zip")
 
   layers = [
-    aws_lambda_layer_version.brevo_dependencies_layer.arn
+    aws_lambda_layer_version.brevo_dependencies_layer.arn,
+    aws_lambda_layer_version.python_dependencies_layer.arn
   ]
 
   environment {
     variables = {
-      BREVO_API_KEY = var.brevo_api_key
+      BREVO_API_KEY   = var.brevo_api_key
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
     }
   }
 

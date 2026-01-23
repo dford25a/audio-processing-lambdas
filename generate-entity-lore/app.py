@@ -508,7 +508,7 @@ def create_campaign_entity_link(entity_type: str, entity_id: str, campaign_id: s
 
 
 def create_entity_highlight_segment(entity_type: str, entity_id: str, entity_name: str,
-                                     highlights: List[str], session_id: str, owner: str) -> bool:
+                                     highlights: List[str], session_id: str, session_name: str, owner: str) -> bool:
     """Creates a Segment record to store entity highlights for a session."""
     if not highlights:
         return True  # No highlights to store
@@ -518,7 +518,7 @@ def create_entity_highlight_segment(entity_type: str, entity_id: str, entity_nam
     # the entity (adventurer/npc/location), not to the session. If sessionSegmentsId
     # is set, these highlights will show up on the session summary page.
     segment_input = {
-        "title": entity_name,
+        "title": session_name,
         "description": highlights,
         "owner": owner
     }
@@ -798,7 +798,8 @@ def lambda_handler(event, context):
 
                 # Create highlight segment for existing entity
                 if session_id and unique_highlights:
-                    create_entity_highlight_segment(entity_type, entity_id, entity_name, unique_highlights, session_id, owner)
+                    session_name = event.get("sessionName")
+                    create_entity_highlight_segment(entity_type, entity_id, entity_name, unique_highlights, session_id, session_name, owner)
         
         # --- Create New Entities ---
         for entity_type, new_entities, result_key in [
@@ -831,7 +832,8 @@ def lambda_handler(event, context):
                     })
                     # Create highlight segment for new entity
                     if session_id and highlights:
-                        create_entity_highlight_segment(entity_type, new_id, name, highlights, session_id, owner)
+                        session_name = event.get("sessionName")
+                        create_entity_highlight_segment(entity_type, new_id, name, highlights, session_id, session_name, owner)
                 else:
                     errors.append(f"Failed to create {entity_type} {name}")
         
