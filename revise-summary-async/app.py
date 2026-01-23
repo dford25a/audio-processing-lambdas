@@ -340,7 +340,7 @@ def handle_background_rewrite(event, context, debug: bool = True):
         
         prompt = f"""You are Scribe, an AI assistant that revises TTRPG session summaries.
 Your task is to revise the TLDR and Session Segments based on the full transcript and user requests.
-CRITICAL: You MUST return EXACTLY {len(segments_for_prompt)} segments. Do NOT add or remove segments.
+CRITICAL: You MUST return EXACTLY {len(segments_for_prompt)} segments. Do NOT add or remove segments. Also, be mindful of the length of the TLDR and each segment, do not increase the length of these unless explicitly instructed/guided to.
 
 Original Generation Settings:
 {get_generation_settings_string(original_gen_instructions)}
