@@ -245,7 +245,7 @@ def get_openai_response(prompt: str, messages: List[Dict[str, str]], debug: bool
     try:
         full_messages = [{"role": "system", "content": prompt}] + messages
         completion = openai_client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model="gpt-5-mini",
             messages=full_messages,
             stream=False
         )

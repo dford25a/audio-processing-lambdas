@@ -256,7 +256,7 @@ def llm_match_entity(query_name: str, candidate_names: List[str], entity_type: s
     """Uses LLM to intelligently match an entity name to candidates."""
     if not candidate_names:
         return None
-    
+
     candidates_list = "\n".join(f"- {name}" for name in candidate_names)
     prompt = f"""You are helping match entity names in a TTRPG session summary.
 
@@ -265,8 +265,12 @@ Task: Determine if "{query_name}" refers to any of these known {entity_type}s:
 
 Rules:
 1. Return ONLY the exact matching name from the list above, or "NO_MATCH" if none match
-2. Consider variations like full names vs nicknames, spelling variations
-3. Be strict: only match if confident they refer to the same entity
+2. PREFER matching to existing entities when possible - audio transcription often causes errors like:
+   - Phonetically similar names (e.g., "Gorn" vs "Gron", "Tharivol" vs "Tharivoal")
+   - Added/missing titles or epithets (e.g., "Gron" vs "Gron son of Gwoin")
+   - Minor spelling variations (e.g., "Aelindra" vs "Alindra")
+3. Consider nicknames, shortened names, and full names as potential matches
+4. Only return "NO_MATCH" if the name is clearly a different entity entirely
 
 Response (one line only):"""
 
@@ -492,6 +496,23 @@ Generate a JSON object containing a TLDR, chronological session segments, and hi
 
 {session_name_instruction}
 
+<entity_classification_rules>
+IMPORTANT: Be strict about classifying entities correctly.
+
+ADVENTURERS are ONLY the Player Characters (PCs) - the characters controlled by players at the table. Signs of an adventurer:
+- Players speak in first person as this character ("I attack the goblin")
+- The DM/GM addresses a player by this character's name
+- Listed in the adventurer_context below
+- Only add NEW adventurers if you are highly confident a player is controlling them
+
+NPCs are ALL other characters, including:
+- Allies and companions who travel with the party (even if they fight alongside the party)
+- Quest givers, shopkeepers, innkeepers
+- Villains, enemies, monsters with names
+- Any character the DM/GM voices or controls
+- When in doubt, classify as NPC rather than adventurer
+</entity_classification_rules>
+
 Output a JSON object with:
 - `tldr`: A string summary of the whole session.
 - `sessionName`: A generated title (3-7 words) or null.
@@ -499,6 +520,7 @@ Output a JSON object with:
 - `adventurerHighlights`, `locationHighlights`, `npcHighlights`: Lists with 'name', 'highlights' (list of strings), 'id' (null), 'is_new' (boolean - true if entity is NOT in the campaign context below).
 
 Mark entities as is_new=true if they appear in the transcript but are NOT listed in the campaign context below.
+When matching names to existing entities, account for audio transcription errors causing phonetic misspellings (e.g., "Gorn" might actually be "Gron").
 
 Session Transcript:
 <session_text>
@@ -529,7 +551,7 @@ Example Output:
         print("Generating summary with LLM")
         try:
             completion = openai_client.chat.completions.create(
-                model="gpt-5.1",
+                model="gpt-5.2",
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
                 temperature=0.2,

@@ -169,7 +169,7 @@ def execute_graphql_request(query: str, variables: Optional[Dict[str, Any]] = No
         if debug: print(f"Error making AppSync request: {e}")
         return {"errors": [{"message": f"RequestException: {e}"}]}
 
-def get_openai_completion(prompt_text: str, client: OpenAI, model: str = "gpt-5.1", debug: bool = True) -> Optional[str]:
+def get_openai_completion(prompt_text: str, client: OpenAI, model: str = "gpt-5.2", debug: bool = True) -> Optional[str]:
     if debug: print(f"Sending prompt to OpenAI (model: {model}). Prompt length: {len(prompt_text)}")
     messages = [{"role": "user", "content": prompt_text}]
     try:

@@ -108,7 +108,7 @@ def get_openai_response(prompt: str, messages: List[Dict[str, str]], debug: bool
         full_messages = [{"role": "system", "content": prompt}] + messages
         
         completion = openai_client.chat.completions.create(
-            model="gpt-4.1-nano", # Consider making model configurable via env var too
+            model="gpt-5-mini", # Consider making model configurable via env var too
             messages=full_messages,
             stream=False # Not using streaming for this chat response
         )

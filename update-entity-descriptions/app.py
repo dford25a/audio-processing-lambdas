@@ -190,7 +190,7 @@ Updated Description:
     # Call OpenAI to get the updated description
     try:
         completion = openai_client.chat.completions.create(
-            model="gpt-5.1",
+            model="gpt-5-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
         )

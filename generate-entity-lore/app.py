@@ -324,9 +324,17 @@ def update_entity_description(entity_id: str, entity_type: str, highlights: List
         entity_name = entity_data.get("name", "Unknown")
 
         highlights_str = "\n".join(f"- {h}" for h in highlights)
-        prompt = f"""Update this TTRPG entity's description with new session highlights.
-Weave the highlights naturally into the existing description. Output only the updated description. 
-Please keep the description concise, do not be too verbose.
+        prompt = f"""You are reviewing an entity's description to see if it needs updating based on new session highlights.
+
+The description should be a HIGH-LEVEL summary (1-3 sentences) of who/what this entity IS - their core identity, role, and defining traits.
+It should NOT chronicle their everyday activities or session-by-session events (that's what highlights are for).
+
+ONLY update the description if the highlights reveal something CRITICAL that changes the entity's core identity, such as:
+- A major status change (death, marriage, betrayal, promotion, corruption)
+- A fundamental shift in allegiance or personality
+- A defining trait or role being revealed for the first time
+
+If the highlights are just normal session activities (conversations, travel, minor events), return the current description UNCHANGED.
 
 Entity: {entity_name}
 Current Description: "{current_description}"
@@ -334,10 +342,10 @@ Current Description: "{current_description}"
 New Highlights:
 {highlights_str}
 
-Updated Description:"""
+Return ONLY the description (1-3 sentences). If no critical change occurred, return the current description exactly as-is:"""
 
         completion = openai_client.chat.completions.create(
-            model="gpt-5.1",
+            model="gpt-5.2",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
         )
@@ -423,7 +431,7 @@ JSON:"""
 
     try:
         completion = openai_client.chat.completions.create(
-            model="gpt-5.1",
+            model="gpt-5.2",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             temperature=0.3,
