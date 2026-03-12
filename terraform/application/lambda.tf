@@ -760,9 +760,11 @@ resource "aws_lambda_function" "generate_entity_lore" {
       CAMPAIGN_NPCS_TABLE        = local.config.campaign_npcs_table
       CAMPAIGN_LOCATIONS_TABLE   = local.config.campaign_locations_table
       CAMPAIGN_ADVENTURERS_TABLE = local.config.campaign_adventurers_table
+      CAMPAIGN_LOOT_ITEMS_TABLE  = local.config.campaign_loot_items_table
       SESSION_NPCS_TABLE         = local.config.session_npcs_table
       SESSION_LOCATIONS_TABLE    = local.config.session_locations_table
       SESSION_ADVENTURERS_TABLE  = local.config.session_adventurers_table
+      SESSION_LOOT_ITEMS_TABLE   = local.config.session_loot_items_table
     }
   }
 
@@ -796,6 +798,39 @@ resource "aws_lambda_function" "update_entity_descriptions" {
       BUCKET_NAME     = local.config.s3_bucket
       ENVIRONMENT     = var.environment
       OPENAI_API_KEY  = var.openai_api_key
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
+    }
+  }
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# =========================================================================
+# NEW LAMBDA FUNCTION: cascade-delete
+# Cascade-deletes an entity (NPC, Location, Adventurer, Session, Campaign)
+# and all its related junction records via AppSync API key auth.
+# =========================================================================
+resource "aws_lambda_function" "cascade_delete" {
+  function_name = "cascade-delete${local.config.function_suffix}"
+  handler       = "app.lambda_handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 120
+  memory_size   = 256
+
+  filename         = "${path.module}/cascade-delete.zip"
+  source_code_hash = filebase64sha256("${path.module}/cascade-delete.zip")
+
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      ENVIRONMENT     = var.environment
       APPSYNC_API_URL = var.appsync_api_url
       APPSYNC_API_KEY = var.appsync_api_key
     }

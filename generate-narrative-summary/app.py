@@ -55,6 +55,7 @@ class NarrativeSummary(BaseModel):
     adventurerHighlights: List[HighlightElement] = Field(description="Highlights for adventurers.")
     locationHighlights: List[HighlightElement] = Field(description="Highlights for locations.")
     npcHighlights: List[HighlightElement] = Field(description="Highlights for NPCs.")
+    lootItemHighlights: List[HighlightElement] = Field(default_factory=list, description="Highlights for loot items.")
 
 # --- Lookup Tables ---
 image_quality_lookup = {
@@ -156,6 +157,14 @@ example_summary = """
       "id": null,
       "is_new": true
     }
+  ],
+  "lootItemHighlights": [
+    {
+      "name": "Tidejewel",
+      "highlights": ["Recovered from the kraken cultist leader", "Appears to pulse with ocean magic"],
+      "id": null,
+      "is_new": true
+    }
   ]
 }
 """
@@ -165,7 +174,7 @@ GET_SESSION_QUERY = "query GetSession($id: ID!) { getSession(id: $id) { id _vers
 
 GET_NPCS_BY_CAMPAIGN_QUERY = """
 query CampaignNpcsByCampaignId($campaignId: ID!, $limit: Int, $nextToken: String) {
-  campaignNpcsByCampaignId(campaignId: $campaignId, limit: $limit, nextToken: $nextToken) {
+  campaignNpcsByCampaignId(campaignId: $campaignId, filter: {_deleted: {ne: true}}, limit: $limit, nextToken: $nextToken) {
     items { nPC { id name } }
     nextToken
   }
@@ -174,7 +183,7 @@ query CampaignNpcsByCampaignId($campaignId: ID!, $limit: Int, $nextToken: String
 
 GET_ADVENTURERS_BY_CAMPAIGN_QUERY = """
 query CampaignAdventurersByCampaignId($campaignId: ID!, $limit: Int, $nextToken: String) {
-  campaignAdventurersByCampaignId(campaignId: $campaignId, limit: $limit, nextToken: $nextToken) {
+  campaignAdventurersByCampaignId(campaignId: $campaignId, filter: {_deleted: {ne: true}}, limit: $limit, nextToken: $nextToken) {
     items { adventurer { id name } }
     nextToken
   }
@@ -183,8 +192,17 @@ query CampaignAdventurersByCampaignId($campaignId: ID!, $limit: Int, $nextToken:
 
 GET_LOCATIONS_BY_CAMPAIGN_QUERY = """
 query CampaignLocationsByCampaignId($campaignId: ID!, $limit: Int, $nextToken: String) {
-  campaignLocationsByCampaignId(campaignId: $campaignId, limit: $limit, nextToken: $nextToken) {
+  campaignLocationsByCampaignId(campaignId: $campaignId, filter: {_deleted: {ne: true}}, limit: $limit, nextToken: $nextToken) {
     items { location { id name } }
+    nextToken
+  }
+}
+"""
+
+GET_LOOT_ITEMS_BY_CAMPAIGN_QUERY = """
+query CampaignLootItemsByCampaignId($campaignId: ID!, $limit: Int, $nextToken: String) {
+  campaignLootItemsByCampaignId(campaignId: $campaignId, filter: {_deleted: {ne: true}}, limit: $limit, nextToken: $nextToken) {
+    items { lootItem { id name } }
     nextToken
   }
 }
@@ -235,8 +253,8 @@ def fetch_campaign_data(campaign_id: str, query: str, data_key: str, item_key: s
             print(f"Warning: GraphQL error during Get{data_key}: {response_gql['errors']}")
             break
             
-        data = response_gql.get("data", {}).get(f"campaign{data_key}ByCampaignId", {})
-        all_items.extend(data.get("items", []))
+        data = (response_gql.get("data") or {}).get(f"campaign{data_key}ByCampaignId") or {}
+        all_items.extend(item for item in data.get("items", []) if item is not None)
         next_token = data.get("nextToken")
         if not next_token:
             break
@@ -299,8 +317,10 @@ def map_ids_to_highlights(highlights: List[HighlightElement], authoritative_enti
     original_case_map = {}
     
     for entity in authoritative_entities:
-        name = entity.get('name') or entity.get(entity_key, {}).get('name', '')
-        entity_id = entity.get('id') or entity.get(entity_key, {}).get('id')
+        if entity is None:
+            continue
+        name = entity.get('name') or (entity.get(entity_key) or {}).get('name', '')
+        entity_id = entity.get('id') or (entity.get(entity_key) or {}).get('id')
         if name and entity_id:
             name_to_id_map[name.lower()] = entity_id
             original_case_map[name.lower()] = name
@@ -466,6 +486,7 @@ def lambda_handler(event, context):
         all_npcs, npc_context = fetch_campaign_data(campaign_id, GET_NPCS_BY_CAMPAIGN_QUERY, 'Npcs', 'nPC', debug)
         all_adventurers, adventurer_context = fetch_campaign_data(campaign_id, GET_ADVENTURERS_BY_CAMPAIGN_QUERY, 'Adventurers', 'adventurer', debug)
         all_locations, location_context = fetch_campaign_data(campaign_id, GET_LOCATIONS_BY_CAMPAIGN_QUERY, 'Locations', 'location', debug)
+        all_loot_items, loot_item_context = fetch_campaign_data(campaign_id, GET_LOOT_ITEMS_BY_CAMPAIGN_QUERY, 'LootItems', 'lootItem', debug)
 
         # --- Read Transcript ---
         print("Reading transcript from S3")
@@ -517,7 +538,9 @@ Output a JSON object with:
 - `tldr`: A string summary of the whole session.
 - `sessionName`: A generated title (3-7 words) or null.
 - `sessionSegments`: A list of 3-5 chronological segments, each with 'title', 'description', 'image_prompt'.
-- `adventurerHighlights`, `locationHighlights`, `npcHighlights`: Lists with 'name', 'highlights' (list of strings), 'id' (null), 'is_new' (boolean - true if entity is NOT in the campaign context below).
+- `adventurerHighlights`, `locationHighlights`, `npcHighlights`, `lootItemHighlights`: Lists with 'name', 'highlights' (list of strings), 'id' (null), 'is_new' (boolean - true if entity is NOT in the campaign context below).
+
+For `lootItemHighlights`: include notable items that were found, received, used, or discussed during the session (weapons, armor, potions, treasures, magic items, etc.). Only include items that are meaningfully mentioned, not every minor consumable.
 
 Mark entities as is_new=true if they appear in the transcript but are NOT listed in the campaign context below.
 When matching names to existing entities, account for audio transcription errors causing phonetic misspellings (e.g., "Gorn" might actually be "Gron").
@@ -542,6 +565,9 @@ Campaign Context (existing entities):
 <location_context>
 {location_context}
 </location_context>
+<loot_item_context>
+{loot_item_context}
+</loot_item_context>
 
 Example Output:
 {example_summary}
@@ -575,6 +601,7 @@ Example Output:
         map_ids_to_highlights(summary.adventurerHighlights, all_adventurers, 'adventurer', debug)
         map_ids_to_highlights(summary.npcHighlights, all_npcs, 'nPC', debug)
         map_ids_to_highlights(summary.locationHighlights, all_locations, 'location', debug)
+        map_ids_to_highlights(summary.lootItemHighlights, all_loot_items, 'lootItem', debug)
 
         # --- Write Summary to S3 ---
         print("Writing narrative summary to S3")
@@ -592,10 +619,12 @@ Example Output:
         existing_adventurers = [h.model_dump() for h in summary.adventurerHighlights if not h.is_new]
         existing_npcs = [h.model_dump() for h in summary.npcHighlights if not h.is_new]
         existing_locations = [h.model_dump() for h in summary.locationHighlights if not h.is_new]
-        
+        existing_loot_items = [h.model_dump() for h in summary.lootItemHighlights if not h.is_new]
+
         new_adventurers = [h.model_dump() for h in summary.adventurerHighlights if h.is_new]
         new_npcs = [h.model_dump() for h in summary.npcHighlights if h.is_new]
         new_locations = [h.model_dump() for h in summary.locationHighlights if h.is_new]
+        new_loot_items = [h.model_dump() for h in summary.lootItemHighlights if h.is_new]
 
         output = {
             "statusCode": 200,
@@ -606,28 +635,30 @@ Example Output:
             "owner": owner,
             "bucket": s3_bucket,
             "transcriptKey": key,
-            
+
             # Image settings for generate-segment-images
             "imageSettings": {
                 "enabled": img_enabled,
                 "quality": img_quality,
                 "stylePrompt": img_style_prompt
             },
-            
+
             # Flags for downstream lambdas
             "generateLore": generate_lore,
             "generateName": generate_name,
-            
+
             # Entity data for downstream processing
             "entityMentions": {
                 "existingAdventurers": existing_adventurers,
                 "existingNPCs": existing_npcs,
                 "existingLocations": existing_locations,
+                "existingLootItems": existing_loot_items,
                 "newAdventurers": new_adventurers,
                 "newNPCs": new_npcs,
-                "newLocations": new_locations
+                "newLocations": new_locations,
+                "newLootItems": new_loot_items
             },
-            
+
             # Passthrough fields
             "userTransactionsTransactionsId": event.get("userTransactionsTransactionsId"),
             "creditsToRefund": event.get("creditsToRefund")

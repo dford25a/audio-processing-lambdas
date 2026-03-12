@@ -62,6 +62,15 @@ error-notifier/requests-*/
 error-notifier/urllib3/
 error-notifier/urllib3-*/
 
+# Python virtual environment
+.venv/
+
+# AppSync schema (generated/downloaded)
+appsync_graphql_schema.json
+
+# Windows Zone.Identifier files
+*.Identifier
+
 # Other specific files
 default_state.json
 import_files.sh

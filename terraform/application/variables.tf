@@ -81,12 +81,14 @@ locals {
       campaign_npcs_table             = "CampaignNpcs-ejphalvgizhdjbbzuj2vahx7ii-dev"
       campaign_locations_table        = "CampaignLocations-ejphalvgizhdjbbzuj2vahx7ii-dev"
       campaign_adventurers_table      = "CampaignAdventurers-ejphalvgizhdjbbzuj2vahx7ii-dev"
+      campaign_loot_items_table       = "CampaignLootItems-ejphalvgizhdjbbzuj2vahx7ii-dev"
       session_npcs_table              = "SessionNpcs-ejphalvgizhdjbbzuj2vahx7ii-dev"
       session_locations_table         = "SessionLocations-ejphalvgizhdjbbzuj2vahx7ii-dev"
       session_adventurers_table       = "SessionAdventurers-ejphalvgizhdjbbzuj2vahx7ii-dev"
+      session_loot_items_table        = "SessionLootItems-ejphalvgizhdjbbzuj2vahx7ii-dev"
     },
     dev = {
-      s3_bucket                       = "scribe8a8fcf3f6cb14734bce4bd48352f8043acdd4-devsort"  
+      s3_bucket                       = "scribe8a8fcf3f6cb14734bce4bd48352f8043acdd4-devsort"
       dynamodb_table                  = "Session-ebn6wlprprdnvdmndj7wh7ddja-devsort"
       html_s3_bucket                  = "scribe-share-dev"
       function_suffix                 = "-dev"
@@ -95,9 +97,11 @@ locals {
       campaign_npcs_table             = "CampaignNpcs-ebn6wlprprdnvdmndj7wh7ddja-devsort"
       campaign_locations_table        = "CampaignLocations-ebn6wlprprdnvdmndj7wh7ddja-devsort"
       campaign_adventurers_table      = "CampaignAdventurers-ebn6wlprprdnvdmndj7wh7ddja-devsort"
+      campaign_loot_items_table       = "CampaignLootItems-ebn6wlprprdnvdmndj7wh7ddja-devsort"
       session_npcs_table              = "SessionNpcs-ebn6wlprprdnvdmndj7wh7ddja-devsort"
       session_locations_table         = "SessionLocations-ebn6wlprprdnvdmndj7wh7ddja-devsort"
       session_adventurers_table       = "SessionAdventurers-ebn6wlprprdnvdmndj7wh7ddja-devsort"
+      session_loot_items_table        = "SessionLootItems-ebn6wlprprdnvdmndj7wh7ddja-devsort"
     }
   }
 

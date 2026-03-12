@@ -34,9 +34,11 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY_FROM_ENV)
 CAMPAIGN_NPCS_TABLE = os.environ.get('CAMPAIGN_NPCS_TABLE', 'CampaignNpcs-dev')
 CAMPAIGN_LOCATIONS_TABLE = os.environ.get('CAMPAIGN_LOCATIONS_TABLE', 'CampaignLocations-dev')
 CAMPAIGN_ADVENTURERS_TABLE = os.environ.get('CAMPAIGN_ADVENTURERS_TABLE', 'CampaignAdventurers-dev')
+CAMPAIGN_LOOT_ITEMS_TABLE = os.environ.get('CAMPAIGN_LOOT_ITEMS_TABLE', 'CampaignLootItems-dev')
 SESSION_NPCS_TABLE = os.environ.get('SESSION_NPCS_TABLE', 'SessionNpcs-dev')
 SESSION_LOCATIONS_TABLE = os.environ.get('SESSION_LOCATIONS_TABLE', 'SessionLocations-dev')
 SESSION_ADVENTURERS_TABLE = os.environ.get('SESSION_ADVENTURERS_TABLE', 'SessionAdventurers-dev')
+SESSION_LOOT_ITEMS_TABLE = os.environ.get('SESSION_LOOT_ITEMS_TABLE', 'SessionLootItems-dev')
 
 
 # --- Pydantic Models for LLM Output ---
@@ -59,8 +61,20 @@ class GeneratedAdventurer(BaseModel):
     description: str = Field(description="A detailed 3-6 sentence description")
     race: Optional[str] = Field(None, description="Adventurer's race")
 
+class GeneratedLootItem(BaseModel):
+    name: str = Field(description="The item's name")
+    description: str = Field(description="A detailed 1-3 sentence description of the item")
+    type: Optional[str] = Field(None, description="Item type (WEAPON, ARMOR, POTION, SCROLL, WONDROUS, TOOL, TREASURE, CONSUMABLE, MATERIAL, OTHER)")
+    quantity: Optional[int] = Field(None, description="Quantity of the item, if known")
+
 
 # --- GraphQL Queries and Mutations ---
+GET_LOOT_ITEM_DETAILS_QUERY = """
+query GetLootItem($id: ID!) {
+  getLootItem(id: $id) { id name description _version }
+}
+"""
+
 GET_ADVENTURER_DETAILS_QUERY = """
 query GetAdventurer($id: ID!) {
   getAdventurer(id: $id) { id name description _version }
@@ -76,6 +90,12 @@ query GetNPC($id: ID!) {
 GET_LOCATION_DETAILS_QUERY = """
 query GetLocation($id: ID!) {
   getLocation(id: $id) { id name description _version }
+}
+"""
+
+UPDATE_LOOT_ITEM_MUTATION = """
+mutation UpdateLootItem($input: UpdateLootItemInput!) {
+  updateLootItem(input: $input) { id _version description }
 }
 """
 
@@ -98,6 +118,19 @@ mutation UpdateLocation($input: UpdateLocationInput!) {
 """
 
 # --- Session Link List Queries (for duplicate checking) ---
+LIST_SESSION_LOOT_ITEMS_QUERY = """
+query ListSessionLootItems($filter: ModelSessionLootItemsFilterInput, $limit: Int, $nextToken: String) {
+  listSessionLootItems(filter: $filter, limit: $limit, nextToken: $nextToken) {
+    items {
+      id
+      sessionId
+      lootItemId
+    }
+    nextToken
+  }
+}
+"""
+
 LIST_SESSION_ADVENTURERS_QUERY = """
 query ListSessionAdventurers($filter: ModelSessionAdventurersFilterInput, $limit: Int, $nextToken: String) {
   listSessionAdventurers(filter: $filter, limit: $limit, nextToken: $nextToken) {
@@ -133,6 +166,23 @@ query ListSessionLocations($filter: ModelSessionLocationsFilterInput, $limit: In
       locationId
     }
     nextToken
+  }
+}
+"""
+
+CREATE_LOOT_ITEM_MUTATION = """
+mutation CreateLootItem($input: CreateLootItemInput!) {
+  createLootItem(input: $input) {
+    id
+    name
+    description
+    type
+    quantity
+    approvalStatus
+    generatedFromSessionId
+    generatedAt
+    owner
+    _version
   }
 }
 """
@@ -205,6 +255,17 @@ mutation CreateSegment($input: CreateSegmentInput!) {
 """
 
 # --- Session Link Mutations ---
+CREATE_SESSION_LOOT_ITEMS_MUTATION = """
+mutation CreateSessionLootItems($input: CreateSessionLootItemsInput!) {
+  createSessionLootItems(input: $input) {
+    id
+    sessionId
+    lootItemId
+    _version
+  }
+}
+"""
+
 CREATE_SESSION_NPCS_MUTATION = """
 mutation CreateSessionNpcs($input: CreateSessionNpcsInput!) {
   createSessionNpcs(input: $input) {
@@ -239,6 +300,17 @@ mutation CreateSessionAdventurers($input: CreateSessionAdventurersInput!) {
 """
 
 # --- Campaign Link Mutations ---
+CREATE_CAMPAIGN_LOOT_ITEMS_MUTATION = """
+mutation CreateCampaignLootItems($input: CreateCampaignLootItemsInput!) {
+  createCampaignLootItems(input: $input) {
+    id
+    campaignId
+    lootItemId
+    _version
+  }
+}
+"""
+
 CREATE_CAMPAIGN_NPCS_MUTATION = """
 mutation CreateCampaignNpcs($input: CreateCampaignNpcsInput!) {
   createCampaignNpcs(input: $input) {
@@ -310,6 +382,9 @@ def update_entity_description(entity_id: str, entity_type: str, highlights: List
     elif entity_type == "Location":
         get_query, update_mutation = GET_LOCATION_DETAILS_QUERY, UPDATE_LOCATION_MUTATION
         get_key, update_key = "getLocation", "updateLocation"
+    elif entity_type == "LootItem":
+        get_query, update_mutation = GET_LOOT_ITEM_DETAILS_QUERY, UPDATE_LOOT_ITEM_MUTATION
+        get_key, update_key = "getLootItem", "updateLootItem"
     else:
         return False
 
@@ -426,6 +501,26 @@ Output a JSON object with:
 
 JSON:"""
         model_class = GeneratedAdventurer
+
+    elif entity_type == "LootItem":
+        prompt = f"""Generate a TTRPG loot item profile based on session highlights. Keep the description concise.
+
+Item Name: {name}
+Session Highlights:
+{highlights_str}
+
+Additional Context:
+{transcript_context[:2000] if transcript_context else "Not provided"}
+
+Output a JSON object with:
+- name: The item's name
+- description: A 1-3 sentence description of the item's appearance, properties, and significance
+- type: One of WEAPON, ARMOR, POTION, SCROLL, WONDROUS, TOOL, TREASURE, CONSUMABLE, MATERIAL, OTHER
+- quantity: Integer quantity if known, otherwise null
+
+JSON:"""
+        model_class = GeneratedLootItem
+
     else:
         return None
 
@@ -444,19 +539,24 @@ JSON:"""
 
 
 def update_linker_table_owner(table_name: str, link_id: str, owner: str) -> bool:
-    """Updates the owner field in a linker table record using DynamoDB directly."""
+    """Updates the owner field in a linker table record using DynamoDB directly.
+    Also updates _lastChangedAt so AppSync DataStore DeltaSync picks up the change."""
+    import time
+    now_ms = int(time.time() * 1000)
     try:
         dynamodb_client.update_item(
             TableName=table_name,
             Key={
                 'id': {'S': link_id}
             },
-            UpdateExpression='SET #owner = :owner',
+            UpdateExpression='SET #owner = :owner, #lca = :lca',
             ExpressionAttributeNames={
-                '#owner': 'owner'
+                '#owner': 'owner',
+                '#lca': '_lastChangedAt'
             },
             ExpressionAttributeValues={
-                ':owner': {'S': owner}
+                ':owner': {'S': owner},
+                ':lca': {'N': str(now_ms)}
             }
         )
         print(f"✅ Updated owner in {table_name} for link ID: {link_id}")
@@ -491,6 +591,14 @@ def create_campaign_entity_link(entity_type: str, entity_id: str, campaign_id: s
         link_input = {
             "campaignId": campaign_id,
             "adventurerId": entity_id
+        }
+    elif entity_type == "LootItem":
+        mutation = CREATE_CAMPAIGN_LOOT_ITEMS_MUTATION
+        create_key = "createCampaignLootItems"
+        table_name = CAMPAIGN_LOOT_ITEMS_TABLE
+        link_input = {
+            "campaignId": campaign_id,
+            "lootItemId": entity_id
         }
     else:
         return False
@@ -538,6 +646,10 @@ def create_entity_highlight_segment(entity_type: str, entity_id: str, entity_nam
         segment_input["nPCSegmentsId"] = entity_id
     elif entity_type == "Location":
         segment_input["locationSegmentsId"] = entity_id
+    elif entity_type == "LootItem":
+        # Segment schema does not have a lootItemSegmentsId field; skip segment creation
+        print(f"ℹ️ Skipping highlight segment for LootItem (not supported in Segment schema)")
+        return True
     else:
         print(f"Unknown entity type: {entity_type}")
         return False
@@ -570,6 +682,10 @@ def check_session_link_exists(entity_type: str, entity_id: str, session_id: str)
         query = LIST_SESSION_ADVENTURERS_QUERY
         list_key = "listSessionAdventurers"
         entity_id_field = "adventurerId"
+    elif entity_type == "LootItem":
+        query = LIST_SESSION_LOOT_ITEMS_QUERY
+        list_key = "listSessionLootItems"
+        entity_id_field = "lootItemId"
     else:
         return False
 
@@ -626,6 +742,14 @@ def create_session_entity_link(entity_type: str, entity_id: str, session_id: str
         link_input = {
             "sessionId": session_id,
             "adventurerId": entity_id
+        }
+    elif entity_type == "LootItem":
+        mutation = CREATE_SESSION_LOOT_ITEMS_MUTATION
+        create_key = "createSessionLootItems"
+        table_name = SESSION_LOOT_ITEMS_TABLE
+        link_input = {
+            "sessionId": session_id,
+            "lootItemId": entity_id
         }
     else:
         return False
@@ -686,6 +810,14 @@ def create_entity_in_database(entity_type: str, profile: Dict, session_id: str, 
             "race": profile.get("race"),
             # Don't auto-assign class - let users set this manually
         }
+    elif entity_type == "LootItem":
+        mutation = CREATE_LOOT_ITEM_MUTATION
+        create_key = "createLootItem"
+        create_input = {
+            **base_input,
+            "type": profile.get("type"),
+            "quantity": profile.get("quantity"),
+        }
     else:
         return None
 
@@ -728,8 +860,8 @@ def lambda_handler(event, context):
     
     Input: {
         entityMentions: {
-            existingAdventurers, existingNPCs, existingLocations,
-            newAdventurers, newNPCs, newLocations
+            existingAdventurers, existingNPCs, existingLocations, existingLootItems,
+            newAdventurers, newNPCs, newLocations, newLootItems
         },
         sessionId, campaignId, owner, bucket, transcriptKey, ...
     }
@@ -762,23 +894,26 @@ def lambda_handler(event, context):
         existing_adventurers = entity_mentions.get("existingAdventurers", [])
         existing_npcs = entity_mentions.get("existingNPCs", [])
         existing_locations = entity_mentions.get("existingLocations", [])
+        existing_loot_items = entity_mentions.get("existingLootItems", [])
         new_adventurers = entity_mentions.get("newAdventurers", [])
         new_npcs = entity_mentions.get("newNPCs", [])
         new_locations = entity_mentions.get("newLocations", [])
-        
-        print(f"Existing: {len(existing_adventurers)} adventurers, {len(existing_npcs)} NPCs, {len(existing_locations)} locations")
-        print(f"New: {len(new_adventurers)} adventurers, {len(new_npcs)} NPCs, {len(new_locations)} locations")
-        
-        created_entities = {"adventurers": [], "npcs": [], "locations": []}
-        updated_entities = {"adventurers": [], "npcs": [], "locations": []}
+        new_loot_items = entity_mentions.get("newLootItems", [])
+
+        print(f"Existing: {len(existing_adventurers)} adventurers, {len(existing_npcs)} NPCs, {len(existing_locations)} locations, {len(existing_loot_items)} loot items")
+        print(f"New: {len(new_adventurers)} adventurers, {len(new_npcs)} NPCs, {len(new_locations)} locations, {len(new_loot_items)} loot items")
+
+        created_entities = {"adventurers": [], "npcs": [], "locations": [], "lootItems": []}
+        updated_entities = {"adventurers": [], "npcs": [], "locations": [], "lootItems": []}
         errors = []
-        
+
         # --- Update Existing Entities ---
         # Aggregate highlights by ID and create session links
         for entity_type, entities, result_key in [
             ("Adventurer", existing_adventurers, "adventurers"),
             ("NPC", existing_npcs, "npcs"),
-            ("Location", existing_locations, "locations")
+            ("Location", existing_locations, "locations"),
+            ("LootItem", existing_loot_items, "lootItems")
         ]:
             # Build maps: id -> highlights and id -> name
             highlights_by_id: Dict[str, List[str]] = {}
@@ -813,7 +948,8 @@ def lambda_handler(event, context):
         for entity_type, new_entities, result_key in [
             ("Adventurer", new_adventurers, "adventurers"),
             ("NPC", new_npcs, "npcs"),
-            ("Location", new_locations, "locations")
+            ("Location", new_locations, "locations"),
+            ("LootItem", new_loot_items, "lootItems")
         ]:
             for entity in new_entities:
                 name = entity.get("name")
