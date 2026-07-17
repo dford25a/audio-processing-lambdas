@@ -236,6 +236,40 @@ def parse_session_id_from_stem(filename_stem: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def extract_physical_descriptions(metadata_content: Dict[str, Any]) -> List[Dict[str, str]]:
+    """
+    Collects user-provided physicalDescription text for every entity passed in the
+    session-generation payload (adventurers, locations, npcs). See issue #3.
+
+    The frontend saves physicalDescription to the DB before invoking the chain and
+    passes the current values in the metadata payload; the backend treats the payload
+    as the source of truth and only READS the field (no DB writes required here).
+
+    Returns a de-duplicated list of {"name", "type", "description"} dicts.
+    """
+    type_by_group = {"adventurers": "adventurer", "locations": "location", "npcs": "NPC"}
+    descriptions: List[Dict[str, str]] = []
+    seen = set()
+    for group, entity_type in type_by_group.items():
+        for entity in metadata_content.get(group, []) or []:
+            if not isinstance(entity, dict):
+                continue
+            name = (entity.get("name") or "").strip()
+            desc = (entity.get("physicalDescription") or "").strip()
+            key = name.lower()
+            if name and desc and key not in seen:
+                seen.add(key)
+                descriptions.append({"name": name, "type": entity_type, "description": desc})
+    return descriptions
+
+
+def format_physical_descriptions(descriptions: List[Dict[str, str]]) -> str:
+    """Renders physical descriptions as a prompt context block."""
+    if not descriptions:
+        return "No physical descriptions were provided."
+    return "\n".join(f"- {d['name']} ({d['type']}): {d['description']}" for d in descriptions)
+
+
 def fetch_campaign_data(campaign_id: str, query: str, data_key: str, item_key: str, debug: bool = False):
     """Fetches paginated campaign data (NPCs, Adventurers, Locations)."""
     if not campaign_id:
@@ -428,6 +462,11 @@ def lambda_handler(event, context):
         generate_lore = False
         generate_name = False
 
+        # Entity appearance descriptions (issue #3) — used to keep generated images
+        # visually consistent with how the user described each entity.
+        physical_descriptions = []
+        physical_descriptions_str = "No physical descriptions were provided."
+
         try:
             metadata_obj = s3_client.get_object(Bucket=s3_bucket, Key=metadata_s3_key)
             metadata_content = json.loads(metadata_obj['Body'].read().decode('utf-8'))
@@ -475,6 +514,11 @@ def lambda_handler(event, context):
             generate_name = metadata_content.get("generate_name", False)
             
             metadata_instructions_str = metadata_content.get("instructions", "Not provided.")
+
+            # Parse per-entity physical descriptions (issue #3)
+            physical_descriptions = extract_physical_descriptions(metadata_content)
+            physical_descriptions_str = format_physical_descriptions(physical_descriptions)
+            print(f"Loaded {len(physical_descriptions)} entity physical description(s)")
 
         except s3_client.exceptions.NoSuchKey:
             print("Warning: Metadata file not found. Using defaults.")
@@ -537,7 +581,7 @@ NPCs are ALL other characters, including:
 Output a JSON object with:
 - `tldr`: A string summary of the whole session.
 - `sessionName`: A generated title (3-7 words) or null.
-- `sessionSegments`: A list of 3-5 chronological segments, each with 'title', 'description', 'image_prompt'.
+- `sessionSegments`: A list of 3-5 chronological segments, each with 'title', 'description', 'image_prompt'. When an adventurer, location, or NPC that appears in the <physical_descriptions> block below is depicted in a segment's scene, weave their described physical appearance into that segment's `image_prompt` so the generated images stay visually consistent with how the user described them.
 - `adventurerHighlights`, `locationHighlights`, `npcHighlights`, `lootItemHighlights`: Lists with 'name', 'highlights' (list of strings), 'id' (null), 'is_new' (boolean - true if entity is NOT in the campaign context below).
 
 For `lootItemHighlights`: include notable items that were found, received, used, or discussed during the session (weapons, armor, potions, treasures, magic items, etc.). Only include items that are meaningfully mentioned, not every minor consumable.
@@ -568,6 +612,11 @@ Campaign Context (existing entities):
 <loot_item_context>
 {loot_item_context}
 </loot_item_context>
+
+Entity Physical Descriptions (user-provided appearance for image generation):
+<physical_descriptions>
+{physical_descriptions_str}
+</physical_descriptions>
 
 Example Output:
 {example_summary}
@@ -642,6 +691,10 @@ Example Output:
                 "quality": img_quality,
                 "stylePrompt": img_style_prompt
             },
+
+            # User-provided entity appearance descriptions (issue #3), passed through
+            # for any downstream image-generation / context-building step that wants them.
+            "physicalDescriptions": physical_descriptions,
 
             # Flags for downstream lambdas
             "generateLore": generate_lore,

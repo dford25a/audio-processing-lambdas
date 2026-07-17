@@ -39,6 +39,8 @@ DEFAULT_LAMBDAS=(
   "persist-summary-data"
   "generate-entity-lore"
   "update-entity-descriptions"
+  "merge-entities"
+  "revise-images-async"
 )
 
 BUILD_DIR="build" # Temporary build directory within terraform/application/
@@ -61,6 +63,8 @@ USE_LAYER_LAMBDAS=(
   "persist-summary-data"
   "generate-entity-lore"
   "update-entity-descriptions"
+  "merge-entities"
+  "revise-images-async"
 )
 
 is_in_use_layer_list() {

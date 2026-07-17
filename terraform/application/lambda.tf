@@ -842,6 +842,77 @@ resource "aws_lambda_function" "cascade_delete" {
 }
 
 # =========================================================================
+# NEW LAMBDA FUNCTION: merge-entities
+# Synchronously merges one entity (source) into another (target) of the same
+# type by re-pointing all Segment FKs and junction rows, then deleting the
+# source. Uses AppSync API key auth. See issue #4.
+# =========================================================================
+resource "aws_lambda_function" "merge_entities" {
+  function_name = "merge-entities${local.config.function_suffix}"
+  handler       = "app.lambda_handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 120
+  memory_size   = 256
+
+  filename         = "${path.module}/merge-entities.zip"
+  source_code_hash = filebase64sha256("${path.module}/merge-entities.zip")
+
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      ENVIRONMENT     = var.environment
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
+    }
+  }
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# =========================================================================
+# NEW ASYNC LAMBDA: revise-images-async
+# Regenerates selected session images (cover and/or specific segments),
+# appending each result to version history. Dispatcher returns immediately
+# after flipping the session to REGENERATING_IMAGES, then self-invokes as a
+# background worker. See issue #5.
+# =========================================================================
+resource "aws_lambda_function" "revise_images_async" {
+  function_name = "revise-images-async${local.config.function_suffix}"
+  handler       = "app.lambda_handler"
+  role          = aws_iam_role.lambda_exec_role.arn
+  runtime       = "python3.11"
+  timeout       = 300 # 5 minute timeout for the background worker
+  memory_size   = 512
+
+  filename         = "${path.module}/revise-images-async.zip"
+  source_code_hash = filebase64sha256("${path.module}/revise-images-async.zip")
+
+  layers = [
+    aws_lambda_layer_version.python_dependencies_layer.arn
+  ]
+
+  environment {
+    variables = {
+      BUCKET_NAME     = local.config.s3_bucket
+      ENVIRONMENT     = var.environment
+      OPENAI_API_KEY  = var.openai_api_key
+      APPSYNC_API_URL = var.appsync_api_url
+      APPSYNC_API_KEY = var.appsync_api_key
+    }
+  }
+
+  tags = {
+    Environment = var.environment
+  }
+}
+
+# =========================================================================
 # Speaker Diarization Lambda (Faster-Whisper + Sherpa-ONNX)
 # Lightweight CPU-only diarization using ONNX Runtime
 # Architecture: ARM64 (Graviton2) for ~20% cost savings

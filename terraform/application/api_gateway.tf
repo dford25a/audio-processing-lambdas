@@ -732,6 +732,180 @@ resource "aws_lambda_permission" "api_gateway_cascade_delete_lambda" {
 }
 
 #################################
+# merge-entities endpoint
+#################################
+
+resource "aws_api_gateway_resource" "merge_entities_resource" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  parent_id   = aws_api_gateway_rest_api.summary_api.root_resource_id
+  path_part   = "merge-entities"
+}
+
+resource "aws_api_gateway_method" "merge_entities_post" {
+  rest_api_id   = aws_api_gateway_rest_api.summary_api.id
+  resource_id   = aws_api_gateway_resource.merge_entities_resource.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito_authorizer.id
+}
+
+resource "aws_api_gateway_method" "merge_entities_options" {
+  rest_api_id   = aws_api_gateway_rest_api.summary_api.id
+  resource_id   = aws_api_gateway_resource.merge_entities_resource.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "merge_entities_lambda_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.summary_api.id
+  resource_id             = aws_api_gateway_resource.merge_entities_resource.id
+  http_method             = aws_api_gateway_method.merge_entities_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.merge_entities.invoke_arn
+}
+
+resource "aws_api_gateway_integration" "merge_entities_options_integration" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.merge_entities_resource.id
+  http_method = aws_api_gateway_method.merge_entities_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "merge_entities_options_200" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.merge_entities_resource.id
+  http_method = aws_api_gateway_method.merge_entities_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true,
+    "method.response.header.Access-Control-Allow-Methods" = true,
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "merge_entities_options_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.merge_entities_resource.id
+  http_method = aws_api_gateway_method.merge_entities_options.http_method
+  status_code = aws_api_gateway_method_response.merge_entities_options_200.status_code
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'",
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+
+  response_templates = {
+    "application/json" = ""
+  }
+
+  depends_on = [
+    aws_api_gateway_integration.merge_entities_options_integration
+  ]
+}
+
+resource "aws_lambda_permission" "api_gateway_merge_entities_lambda" {
+  statement_id  = "AllowExecutionFromAPIGateway_MergeEntities"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.merge_entities.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.summary_api.execution_arn}/*/${aws_api_gateway_method.merge_entities_post.http_method}${aws_api_gateway_resource.merge_entities_resource.path}"
+}
+
+#################################
+# revise-images-async endpoint
+#################################
+
+resource "aws_api_gateway_resource" "revise_images_async_resource" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  parent_id   = aws_api_gateway_rest_api.summary_api.root_resource_id
+  path_part   = "revise-images-async"
+}
+
+resource "aws_api_gateway_method" "revise_images_async_post" {
+  rest_api_id   = aws_api_gateway_rest_api.summary_api.id
+  resource_id   = aws_api_gateway_resource.revise_images_async_resource.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito_authorizer.id
+}
+
+resource "aws_api_gateway_method" "revise_images_async_options" {
+  rest_api_id   = aws_api_gateway_rest_api.summary_api.id
+  resource_id   = aws_api_gateway_resource.revise_images_async_resource.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "revise_images_async_lambda_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.summary_api.id
+  resource_id             = aws_api_gateway_resource.revise_images_async_resource.id
+  http_method             = aws_api_gateway_method.revise_images_async_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.revise_images_async.invoke_arn
+}
+
+resource "aws_api_gateway_integration" "revise_images_async_options_integration" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.revise_images_async_resource.id
+  http_method = aws_api_gateway_method.revise_images_async_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "revise_images_async_options_200" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.revise_images_async_resource.id
+  http_method = aws_api_gateway_method.revise_images_async_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true,
+    "method.response.header.Access-Control-Allow-Methods" = true,
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "revise_images_async_options_integration_response" {
+  rest_api_id = aws_api_gateway_rest_api.summary_api.id
+  resource_id = aws_api_gateway_resource.revise_images_async_resource.id
+  http_method = aws_api_gateway_method.revise_images_async_options.http_method
+  status_code = aws_api_gateway_method_response.revise_images_async_options_200.status_code
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",
+    "method.response.header.Access-Control-Allow-Methods" = "'POST,OPTIONS'",
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+
+  response_templates = {
+    "application/json" = ""
+  }
+
+  depends_on = [
+    aws_api_gateway_integration.revise_images_async_options_integration
+  ]
+}
+
+resource "aws_lambda_permission" "api_gateway_revise_images_async_lambda" {
+  statement_id  = "AllowExecutionFromAPIGateway_ReviseImagesAsync"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.revise_images_async.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.summary_api.execution_arn}/*/${aws_api_gateway_method.revise_images_async_post.http_method}${aws_api_gateway_resource.revise_images_async_resource.path}"
+}
+
+#################################
 # html-to-url endpoint
 #################################
 
@@ -907,6 +1081,24 @@ resource "aws_api_gateway_deployment" "summary_api_deployment" {
       aws_api_gateway_method_response.cascade_delete_options_200.id,
       aws_api_gateway_integration_response.cascade_delete_options_integration_response.id,
 
+      # Merge Entities Resources
+      aws_api_gateway_resource.merge_entities_resource.id,
+      aws_api_gateway_method.merge_entities_post.id,
+      aws_api_gateway_method.merge_entities_options.id,
+      aws_api_gateway_integration.merge_entities_lambda_integration.id,
+      aws_api_gateway_integration.merge_entities_options_integration.id,
+      aws_api_gateway_method_response.merge_entities_options_200.id,
+      aws_api_gateway_integration_response.merge_entities_options_integration_response.id,
+
+      # Revise Images Async Resources
+      aws_api_gateway_resource.revise_images_async_resource.id,
+      aws_api_gateway_method.revise_images_async_post.id,
+      aws_api_gateway_method.revise_images_async_options.id,
+      aws_api_gateway_integration.revise_images_async_lambda_integration.id,
+      aws_api_gateway_integration.revise_images_async_options_integration.id,
+      aws_api_gateway_method_response.revise_images_async_options_200.id,
+      aws_api_gateway_integration_response.revise_images_async_options_integration_response.id,
+
       # Html To Url Resources
       aws_api_gateway_resource.html_to_url_resource.id,
       aws_api_gateway_method.html_to_url_post.id,
@@ -979,6 +1171,16 @@ output "spend_credits_api_url" {
 output "html_to_url_api_url" {
   value       = "${aws_api_gateway_stage.api_stage.invoke_url}${aws_api_gateway_resource.html_to_url_resource.path}"
   description = "URL for invoking the html-to-url endpoint"
+}
+
+output "merge_entities_api_url" {
+  value       = "${aws_api_gateway_stage.api_stage.invoke_url}${aws_api_gateway_resource.merge_entities_resource.path}"
+  description = "URL for invoking the merge-entities endpoint"
+}
+
+output "revise_images_async_api_url" {
+  value       = "${aws_api_gateway_stage.api_stage.invoke_url}${aws_api_gateway_resource.revise_images_async_resource.path}"
+  description = "URL for invoking the revise-images-async endpoint"
 }
 
 output "cascade_delete_api_url" {
