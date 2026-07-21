@@ -445,16 +445,19 @@ def handle_dispatch(event, context) -> Dict[str, Any]:
 
     current_regen_count = session.get("regenerateImageCount") or 0
 
+    # Count one per image the user asked to regenerate (cover + each segment).
+    images_requested = (1 if include_cover else 0) + len(segment_ids)
+
     if credits_to_charge > 0:
         if not charge_credits(user_tx_id, session_id, credits_to_charge):
             return _http(False, "Insufficient credits or failed to charge for image regeneration.")
 
-    # Increment the per-action counter and flip status to the busy state (single write
-    # so the frontend subscription fires once).
+    # Increment the counter by the number of images requested and flip status to the
+    # busy state (single write so the frontend subscription fires once).
     updated = update_session({
         "id": session_id,
         "_version": session["_version"],
-        "regenerateImageCount": current_regen_count + 1,
+        "regenerateImageCount": current_regen_count + images_requested,
         "transcriptionStatus": REGEN_BUSY_STATUS,
     })
     if not updated:
