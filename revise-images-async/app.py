@@ -280,9 +280,19 @@ def build_cover_prompt(session: Dict, user_instructions: str) -> str:
     return prompt
 
 
-def _append(existing: Optional[List[str]], new_key: str) -> List[str]:
-    """Appends new_key to the version-history list, preserving order."""
+def _append_history(existing: Optional[List[str]], current_active: Optional[str], new_key: str) -> List[str]:
+    """
+    Appends new_key to the version-history list, preserving order.
+
+    The initial pipeline (persist-summary-data) only sets the singular image
+    field (Segment.image / Session.primaryImage) and never seeds the images
+    array, so on the first regeneration we seed history with the existing active
+    image. This keeps the original version in the gallery instead of the array
+    only ever containing the newest image.
+    """
     history = list(existing) if existing else []
+    if not history and current_active:
+        history.append(current_active)
     history.append(new_key)
     return history
 
@@ -322,7 +332,7 @@ def handle_background(payload: Dict[str, Any]) -> None:
                 "id": session_id,
                 "_version": session["_version"],
                 "primaryImage": new_key,
-                "images": _append(session.get("images"), new_key),
+                "images": _append_history(session.get("images"), session.get("primaryImage"), new_key),
             })
             if not updated:
                 raise RuntimeError("Failed to persist regenerated cover.")
@@ -345,7 +355,7 @@ def handle_background(payload: Dict[str, Any]) -> None:
                 "id": segment_id,
                 "_version": segment["_version"],
                 "image": new_key,
-                "images": _append(segment.get("images"), new_key),
+                "images": _append_history(segment.get("images"), segment.get("image"), new_key),
             }})
             if not (upd.get("data") or {}).get("updateSegment"):
                 raise RuntimeError(f"Failed to persist regenerated image for segment {segment_id}.")
