@@ -256,28 +256,66 @@ def generate_and_upload_image(scene_prompt: str, style_prompt: str, image_qualit
         return None
 
 
-def build_segment_prompt(segment: Dict, user_instructions: str) -> str:
-    """Builds a scene prompt for a segment from its stored title/description."""
-    title = (segment.get("title") or "").strip()
-    desc = segment.get("description") or []
-    if isinstance(desc, list):
-        desc_text = desc[-1] if desc else ""
-    else:
-        desc_text = desc or ""
-    parts = [p for p in [title, desc_text] if p]
-    prompt = ". ".join(parts) if parts else "A scene from this tabletop RPG session."
-    if user_instructions:
-        prompt = f"{prompt}\n\nAdditional user direction: {user_instructions}"
-    return prompt
+def load_original_image_prompts(session_id: str, campaign_id: Optional[str]) -> List[Optional[str]]:
+    """
+    Loads the original per-segment image_prompt list from the narrative-summary JSON
+    in S3 (written by generate-narrative-summary), ordered by segment index.
+
+    These are the prompts that produced the original images — and they already fold in
+    entity physicalDescription (issue #3) — so reusing them as the regeneration base
+    keeps new versions visually consistent with the originals. Returns [] if the
+    summary is unavailable (e.g. older sessions), so callers fall back to stored text.
+    """
+    if not campaign_id:
+        return []
+    key = f"public/summaries/narrative/campaign{campaign_id}Session{session_id}.json"
+    try:
+        obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=key)
+        summary = json.loads(obj["Body"].read().decode("utf-8"))
+    except Exception as e:
+        print(f"  Could not load original image prompts from {key}: {e}")
+        return []
+    segments = summary.get("sessionSegments") or []
+    return [seg.get("image_prompt") for seg in segments]
 
 
-def build_cover_prompt(session: Dict, user_instructions: str) -> str:
-    tldr = session.get("tldr") or []
-    tldr_text = (tldr[0] if isinstance(tldr, list) and tldr else (tldr if isinstance(tldr, str) else "")) or ""
-    prompt = tldr_text.strip() or "A dramatic cover illustration for this tabletop RPG session."
+def build_segment_prompt(segment: Dict, user_instructions: str, original_prompt: Optional[str] = None) -> str:
+    """
+    Builds a scene prompt for a segment. Prefers the original image_prompt (from the
+    narrative summary) so regenerations stay consistent with the original image; falls
+    back to reconstructing from the segment's stored title + latest description.
+    """
+    base = (original_prompt or "").strip()
+    if not base:
+        title = (segment.get("title") or "").strip()
+        desc = segment.get("description") or []
+        if isinstance(desc, list):
+            desc_text = desc[-1] if desc else ""
+        else:
+            desc_text = desc or ""
+        parts = [p for p in [title, desc_text] if p]
+        base = ". ".join(parts) if parts else "A scene from this tabletop RPG session."
     if user_instructions:
-        prompt = f"{prompt}\n\nAdditional user direction: {user_instructions}"
-    return prompt
+        base = f"{base}\n\nAdditional user direction: {user_instructions}"
+    return base
+
+
+def build_cover_prompt(session: Dict, user_instructions: str,
+                       original_prompts: Optional[List[Optional[str]]] = None) -> str:
+    """
+    Builds the cover prompt. The original cover is the first segment's image, so we
+    prefer the first segment's original image_prompt; fall back to the session tldr.
+    """
+    base = ""
+    if original_prompts:
+        base = (original_prompts[0] or "").strip()
+    if not base:
+        tldr = session.get("tldr") or []
+        tldr_text = (tldr[0] if isinstance(tldr, list) and tldr else (tldr if isinstance(tldr, str) else "")) or ""
+        base = tldr_text.strip() or "A dramatic cover illustration for this tabletop RPG session."
+    if user_instructions:
+        base = f"{base}\n\nAdditional user direction: {user_instructions}"
+    return base
 
 
 def _append_history(existing: Optional[List[str]], current_active: Optional[str], new_key: str) -> List[str]:
@@ -315,6 +353,9 @@ def handle_background(payload: Dict[str, Any]) -> None:
     include_cover = bool(targets.get("includeCover"))
     segment_ids = targets.get("segmentIds") or []
 
+    # Original prompts (keyed by segment index) that produced the initial images.
+    original_prompts = load_original_image_prompts(session_id, payload.get("campaignId"))
+
     failed = False
     try:
         # --- Cover -------------------------------------------------------------
@@ -322,7 +363,7 @@ def handle_background(payload: Dict[str, Any]) -> None:
             session = get_session(session_id)
             if not session:
                 raise ValueError(f"Session {session_id} not found for cover regeneration.")
-            cover_prompt = build_cover_prompt(session, user_instructions)
+            cover_prompt = build_cover_prompt(session, user_instructions, original_prompts)
             new_key = generate_and_upload_image(
                 cover_prompt, style_prompt, image_quality,
                 f"public/segment-images/{session_id}_cover_{uuid.uuid4().hex}.png")
@@ -345,7 +386,9 @@ def handle_background(payload: Dict[str, Any]) -> None:
                 raise ValueError(f"Segment {segment_id} not found.")
             if segment.get("sessionId") and segment["sessionId"] != session_id:
                 raise ValueError(f"Segment {segment_id} does not belong to session {session_id}.")
-            scene_prompt = build_segment_prompt(segment, user_instructions)
+            idx = segment.get("index")
+            original_prompt = original_prompts[idx] if isinstance(idx, int) and 0 <= idx < len(original_prompts) else None
+            scene_prompt = build_segment_prompt(segment, user_instructions, original_prompt)
             new_key = generate_and_upload_image(
                 scene_prompt, style_prompt, image_quality,
                 f"public/segment-images/{session_id}_segment_{segment_id}_{uuid.uuid4().hex}.png")
