@@ -1,5 +1,6 @@
 # --- Standard Library Imports ---
 import os
+import io
 import json
 import base64
 import uuid
@@ -24,6 +25,15 @@ BUCKET_NAME = os.environ.get('BUCKET_NAME')
 # these overridable via env means the value can change without a code deploy.
 REGEN_BUSY_STATUS = os.environ.get('REGEN_BUSY_STATUS', 'REGENERATING_IMAGES')
 REGEN_DONE_STATUS = os.environ.get('REGEN_DONE_STATUS', 'READ')
+
+# Image models. Kept as env vars so the model / fidelity can be tuned (cost vs quality)
+# without a code deploy. `regenerate: true` -> fresh text-to-image with IMAGE_MODEL;
+# `regenerate: false` -> OpenAI image edit of the existing image with EDIT_MODEL.
+# input_fidelity="high" preserves faces/detail on edits (gpt-image-1 / gpt-image-1.5
+# only) at a higher input-token cost; left empty it is omitted from the request.
+IMAGE_MODEL = os.environ.get('IMAGE_MODEL', 'gpt-image-1-mini')
+EDIT_MODEL = os.environ.get('EDIT_MODEL', 'gpt-image-1-mini')
+EDIT_INPUT_FIDELITY = os.environ.get('EDIT_INPUT_FIDELITY', '')
 
 # --- VALIDATE ESSENTIAL CONFIGURATION ---
 if not OPENAI_API_KEY:
@@ -234,7 +244,7 @@ def generate_and_upload_image(scene_prompt: str, style_prompt: str, image_qualit
     full_prompt = f"{style_prompt}. {scene_prompt}"
     try:
         response = openai_client.images.generate(
-            model="gpt-image-1-mini",
+            model=IMAGE_MODEL,
             prompt=full_prompt,
             n=1,
             size="1536x1024",
@@ -252,6 +262,66 @@ def generate_and_upload_image(scene_prompt: str, style_prompt: str, image_qualit
         return None
     except Exception as e:
         print(f"  Error generating {s3_key}: {e}")
+        traceback.print_exc()
+        return None
+
+
+def _image_file(image_bytes: bytes, name: str = "image.png") -> io.BytesIO:
+    """Wraps raw bytes in a named file-like object for the OpenAI images.edit `image` arg."""
+    buf = io.BytesIO(image_bytes)
+    buf.name = name
+    return buf
+
+
+def edit_and_upload_image(input_image_key: str, edit_instruction: str, image_quality: str,
+                          s3_key: str) -> Optional[str]:
+    """
+    Edits an existing image (fetched from S3) per the user's instruction using OpenAI's
+    image edit API, then uploads the result to s3_key. Returns the key or None.
+
+    Used when regenerate=false — e.g. "make the dwarf's hair green" applied to the
+    current segment/cover image, preserving the rest of the scene.
+    """
+    if not edit_instruction:
+        print("  No edit instruction provided; skipping edit.")
+        return None
+    if not input_image_key:
+        print("  No existing image to edit; skipping edit.")
+        return None
+    try:
+        src = s3_client.get_object(Bucket=BUCKET_NAME, Key=input_image_key)
+        input_bytes = src["Body"].read()
+    except Exception as e:
+        print(f"  Could not load source image {input_image_key}: {e}")
+        return None
+
+    prompt = (f"Apply this change to the provided image: {edit_instruction}. "
+              f"Keep the rest of the composition, characters, and art style unchanged "
+              f"except where the requested change requires otherwise.")
+    edit_kwargs: Dict[str, Any] = {
+        "model": EDIT_MODEL,
+        "image": _image_file(input_bytes),
+        "prompt": prompt,
+        "n": 1,
+        "size": "1536x1024",
+        "quality": openai_quality_for(image_quality),
+    }
+    if EDIT_INPUT_FIDELITY:
+        edit_kwargs["input_fidelity"] = EDIT_INPUT_FIDELITY
+    try:
+        response = openai_client.images.edit(**edit_kwargs)
+        if not (response.data and response.data[0].b64_json):
+            print(f"  No image data returned for edit {s3_key}.")
+            return None
+        image_bytes = base64.b64decode(response.data[0].b64_json)
+        s3_client.put_object(Bucket=BUCKET_NAME, Key=s3_key, Body=image_bytes, ContentType='image/png')
+        print(f"  ✅ Uploaded (edit) {s3_key}")
+        return s3_key
+    except openai.APIError as e:
+        print(f"  OpenAI API error editing {s3_key}: {e}")
+        return None
+    except Exception as e:
+        print(f"  Error editing {s3_key}: {e}")
         traceback.print_exc()
         return None
 
@@ -352,9 +422,12 @@ def handle_background(payload: Dict[str, Any]) -> None:
 
     include_cover = bool(targets.get("includeCover"))
     segment_ids = targets.get("segmentIds") or []
+    # regenerate=true -> fresh generation (default); regenerate=false -> edit existing image.
+    regenerate = payload.get("regenerate", True)
 
     # Original prompts (keyed by segment index) that produced the initial images.
-    original_prompts = load_original_image_prompts(session_id, payload.get("campaignId"))
+    # Only needed for fresh generation; edit mode works from the existing image.
+    original_prompts = load_original_image_prompts(session_id, payload.get("campaignId")) if regenerate else []
 
     failed = False
     try:
@@ -363,10 +436,12 @@ def handle_background(payload: Dict[str, Any]) -> None:
             session = get_session(session_id)
             if not session:
                 raise ValueError(f"Session {session_id} not found for cover regeneration.")
-            cover_prompt = build_cover_prompt(session, user_instructions, original_prompts)
-            new_key = generate_and_upload_image(
-                cover_prompt, style_prompt, image_quality,
-                f"public/segment-images/{session_id}_cover_{uuid.uuid4().hex}.png")
+            cover_key = f"public/segment-images/{session_id}_cover_{uuid.uuid4().hex}.png"
+            if regenerate:
+                cover_prompt = build_cover_prompt(session, user_instructions, original_prompts)
+                new_key = generate_and_upload_image(cover_prompt, style_prompt, image_quality, cover_key)
+            else:
+                new_key = edit_and_upload_image(session.get("primaryImage"), user_instructions, image_quality, cover_key)
             if not new_key:
                 raise RuntimeError("Cover image generation failed.")
             updated = update_session({
@@ -386,12 +461,14 @@ def handle_background(payload: Dict[str, Any]) -> None:
                 raise ValueError(f"Segment {segment_id} not found.")
             if segment.get("sessionId") and segment["sessionId"] != session_id:
                 raise ValueError(f"Segment {segment_id} does not belong to session {session_id}.")
-            idx = segment.get("index")
-            original_prompt = original_prompts[idx] if isinstance(idx, int) and 0 <= idx < len(original_prompts) else None
-            scene_prompt = build_segment_prompt(segment, user_instructions, original_prompt)
-            new_key = generate_and_upload_image(
-                scene_prompt, style_prompt, image_quality,
-                f"public/segment-images/{session_id}_segment_{segment_id}_{uuid.uuid4().hex}.png")
+            segment_key = f"public/segment-images/{session_id}_segment_{segment_id}_{uuid.uuid4().hex}.png"
+            if regenerate:
+                idx = segment.get("index")
+                original_prompt = original_prompts[idx] if isinstance(idx, int) and 0 <= idx < len(original_prompts) else None
+                scene_prompt = build_segment_prompt(segment, user_instructions, original_prompt)
+                new_key = generate_and_upload_image(scene_prompt, style_prompt, image_quality, segment_key)
+            else:
+                new_key = edit_and_upload_image(segment.get("image"), user_instructions, image_quality, segment_key)
             if not new_key:
                 raise RuntimeError(f"Image generation failed for segment {segment_id}.")
             upd = gql(_UPDATE_SEGMENT, {"input": {
@@ -480,6 +557,12 @@ def handle_dispatch(event, context) -> Dict[str, Any]:
     if not include_cover and not segment_ids:
         return _http(False, "No regeneration targets: set includeCover or provide segmentIds.")
 
+    # regenerate=true -> fresh generation (default, current behavior);
+    # regenerate=false -> edit the existing image, which requires an instruction.
+    regenerate = body.get("regenerate", True)
+    if not regenerate and not user_instructions:
+        return _http(False, "Edit mode (regenerate=false) requires userInstructions describing the change.")
+
     # Credit cost is computed by the frontend (from IMAGE_QUALITY_OPTIONS) and passed
     # in, mirroring the initial generation flow. Deduction happens server-side below.
     credits_to_charge = body.get("creditsToSpend", 0) or 0
@@ -525,6 +608,7 @@ def handle_dispatch(event, context) -> Dict[str, Any]:
         "sessionId": session_id,
         "campaignId": campaign_id,
         "targets": {"includeCover": include_cover, "segmentIds": segment_ids},
+        "regenerate": regenerate,
         "image_instructions": image_instructions,
         "userInstructions": user_instructions,
         "userTransactionsTransactionsId": user_tx_id,
